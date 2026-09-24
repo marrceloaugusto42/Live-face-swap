@@ -40,9 +40,9 @@ export default function App(){
     const pt=(i:number)=>({x:p[i].x*w,y:p[i].y*h});
     const left=pt(33),right=pt(263),nose=pt(1),chin=pt(152);
     const dx=right.x-left.x,dy=right.y-left.y,angle=Math.atan2(dy,dx),eyeDist=Math.hypot(dx,dy);
-    const fw=eyeDist*2.18,fh=eyeDist*2.58,cx=nose.x,cy=(nose.y+chin.y)*.5;
+    const fw=eyeDist*2.22,fh=eyeDist*2.68,cx=nose.x,cy=nose.y+eyeDist*.38;
     x.save();x.translate(mirror?w-cx:cx,cy);if(mirror)x.scale(-1,1);x.rotate(angle);
-    const g=x.createRadialGradient(0,0,fw*.22,0,0,fw*.62);g.addColorStop(0,"rgba(255,255,255,1)");g.addColorStop(.72,"rgba(255,255,255,.98)");g.addColorStop(1,"rgba(255,255,255,0)");
+    const g=x.createRadialGradient(0,0,fw*.18,0,0,fw*.62);g.addColorStop(0,"rgba(255,255,255,1)");g.addColorStop(.58,"rgba(255,255,255,.99)");g.addColorStop(.82,"rgba(255,255,255,.72)");g.addColorStop(1,"rgba(255,255,255,0)");
     const mask=document.createElement("canvas");mask.width=Math.ceil(fw);mask.height=Math.ceil(fh);
     const m=mask.getContext("2d")!;m.fillStyle=g;m.beginPath();m.ellipse(fw/2,fh/2,fw*.49,fh*.49,0,0,Math.PI*2);m.fill();
     x.globalCompositeOperation="source-over";x.globalAlpha=.97;
