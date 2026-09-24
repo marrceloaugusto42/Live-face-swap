@@ -10,16 +10,17 @@ Browser-first real-time face-swap workspace for video experiences.
 - 30 FPS processed `canvas.captureStream()` output
 - Output stream exposed as `window.liveFaceOutput`
 - Dedicated output window for OBS/window-capture workflows
-- Mirror preview and responsive controls
 - Consent-first source-face confirmation
 
-## Virtual-camera workflow
+## Desktop virtual camera
 
-The browser cannot register an operating-system camera device by itself. The current output layer creates a real `MediaStream` from the processed canvas. For native desktop apps, use:
+The browser cannot register an operating-system camera device by itself. LiveFace now includes a small OBS WebSocket bridge under `desktop/` that can start/stop OBS Virtual Camera.
+
+Workflow:
 
 `LiveFace → Output Window → OBS Window Capture → OBS Virtual Camera → WhatsApp / Discord / other desktop apps`
 
-This gives desktop applications a camera device containing the processed LiveFace output without modifying the native social-media application.
+Setup details are in `desktop/README.md`.
 
 ## Run locally
 
@@ -30,6 +31,6 @@ npm run dev
 
 The face-tracking model is loaded in the browser from MediaPipe's model CDN. Camera frames and the selected source image remain local to the browser in this build.
 
-## Next native bridge
+## Native driver note
 
-A true one-click system virtual camera requires a signed native camera/virtual-device component (for example a desktop companion). The browser output API is separated now so that component can consume the processed stream in a future release.
+A completely standalone OS camera device without OBS still requires a signed native virtual-camera driver/extension for the target operating system. The current bridge deliberately uses OBS's established virtual-camera implementation rather than installing an unsigned camera driver.
