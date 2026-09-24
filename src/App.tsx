@@ -25,7 +25,7 @@ export default function App(){
    if(c&&"captureStream" in c){output.current=c.captureStream(30);setOutputReady(true);(window as Window&{liveFaceOutput?:MediaStream}).liveFaceOutput=output.current}
    setRunning(true);setReady(true);setStatus(sourceUrl?"Live output active":"Live camera active — add a source face for the swap.");
    draw();
-  }catch(e){console.error(e);setStatus("Camera/model could not start. Use HTTPS and allow camera access.")}
+  }catch(e){console.error(e);setStatus(e instanceof DOMException ? `Camera error: ${e.name}. Check browser permission and camera availability.` : `Camera/model error: ${e instanceof Error?e.message:"Unknown error"}`)}
  }
  function stop(){cancelAnimationFrame(raf.current);stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;setOutputReady(false);setRunning(false);setReady(false);setStatus("Camera is off")}
  function draw(){
