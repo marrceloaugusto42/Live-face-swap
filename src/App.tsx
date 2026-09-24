@@ -4,9 +4,28 @@ import {FaceLandmarker,FilesetResolver} from "@mediapipe/tasks-vision";
 const MODEL="https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 type OutputWindow=Window & {liveFaceOutput?: HTMLVideoElement};
 
+const SWAP_POINTS=[10,33,54,67,109,127,143,152,162,172,176,234,263,284,297,338,356,366,377,389,397,400,454,61,291,13,14,78,308,93,323,132,361,58,288,149,378,150,379,176,400,197,5,4,1,168,6,9,195,197,2,98,327,129,358,130,359,174,399,175,400];
+let swapTriangles:number[][]|null=null;
+function triangulate(points:{x:number;y:number}[]){
+ const tris:number[][]=[];const n=points.length;
+ const minX=Math.min(...points.map(p=>p.x)),maxX=Math.max(...points.map(p=>p.x)),minY=Math.min(...points.map(p=>p.y)),maxY=Math.max(...points.map(p=>p.y)),d=Math.max(maxX-minX,maxY-minY)*20||100,mx=(minX+maxX)/2,my=(minY+maxY)/2;
+ const pts=points.map((p,i)=>({x:p.x,y:p.y,i})).concat([{x:mx-d,y:my-d,i:n},{x:mx,y:my+d,i:n+1},{x:mx+d,y:my-d,i:n+2}]);
+ const cc=(a:any,b:any,c:any)=>{const q=2*(a.x*(b.y-c.y)+b.x*(c.y-a.y)+c.x*(a.y-b.y));if(Math.abs(q)<1e-8)return{x:0,y:0,r:Infinity};const ux=((a.x*a.x+a.y*a.y)*(b.y-c.y)+(b.x*b.x+b.y*b.y)*(c.y-a.y)+(c.x*c.x+c.y*c.y)*(a.y-b.y))/q,uy=((a.x*a.x+a.y*a.y)*(c.x-b.x)+(b.x*b.x+b.y*b.y)*(a.x-c.x)+(c.x*c.x+c.y*c.y)*(b.x-a.x))/q;return{x:ux,y:uy,r:Math.hypot(ux-a.x,uy-a.y)}};
+ let ts:number[][]=[[n,n+1,n+2]];
+ for(let i=0;i<n;i++){const p=pts[i],bad=ts.filter(t=>{const z=cc(pts[t[0]],pts[t[1]],pts[t[2]]);return Math.hypot(p.x-z.x,p.y-z.y)<=z.r+1e-6}),edges:number[][]=[];for(const t of bad)for(let k=0;k<3;k++){const e=[t[k],t[(k+1)%3]],j=edges.findIndex(q=>q[0]===e[1]&&q[1]===e[0]);j>=0?edges.splice(j,1):edges.push(e)}ts=ts.filter(t=>!bad.includes(t));for(const e of edges)ts.push([e[0],e[1],i])}
+ return ts.filter(t=>t.every(i=>i<n));
+}
+function warpTriangle(ctx:CanvasRenderingContext2D,img:HTMLImageElement,s:number[],d:number[],alpha:number){
+ const [x0,y0,x1,y1,x2,y2]=s,[u0,v0,u1,v1,u2,v2]=d,den=x0*(y1-y2)+x1*(y2-y0)+x2*(y0-y1);if(Math.abs(den)<1e-5)return;
+ const a=(u0*(y1-y2)+u1*(y2-y0)+u2*(y0-y1))/den,b=(v0*(y1-y2)+v1*(y2-y0)+v2*(y0-y1))/den,c=(u0*(x2-x1)+u1*(x0-x2)+u2*(x1-x0))/den,dv=(v0*(x2-x1)+v1*(x0-x2)+v2*(x1-x0))/den,e=(u0*(x1*y2-x2*y1)+u1*(x2*y0-x0*y2)+u2*(x0*y1-x1*y0))/den,f=(v0*(x1*y2-x2*y1)+v1*(x2*y0-x0*y2)+v2*(x0*y1-x1*y0))/den;
+ ctx.save();ctx.globalAlpha=alpha;ctx.beginPath();ctx.moveTo(u0,v0);ctx.lineTo(u1,v1);ctx.lineTo(u2,v2);ctx.closePath();ctx.clip();ctx.setTransform(a,b,c,dv,e,f);ctx.drawImage(img,0,0);ctx.restore();
+}
+
+
+
 export default function App(){
  const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null),source=useRef<HTMLImageElement>(null);
- const stream=useRef<MediaStream|null>(null),output=useRef<MediaStream|null>(null),landmarker=useRef<FaceLandmarker|null>(null),raf=useRef<number>(0),popup=useRef<Window|null>(null);
+ const stream=useRef<MediaStream|null>(null),output=useRef<MediaStream|null>(null),landmarker=useRef<FaceLandmarker|null>(null),raf=useRef<number>(0),popup=useRef<Window|null>(null),sourcePoints=useRef<{x:number;y:number}[]|null>(null);
  const [running,setRunning]=useState(false),[sourceUrl,setSourceUrl]=useState(""),[status,setStatus]=useState("Camera is off");
  const [mirror,setMirror]=useState(true),[consent,setConsent]=useState(false),[ready,setReady]=useState(false),[outputReady,setOutputReady]=useState(false);
  const [devices,setDevices]=useState<MediaDeviceInfo[]>([]),[deviceId,setDeviceId]=useState("");
@@ -46,31 +65,13 @@ export default function App(){
  }
  function stop(){cancelAnimationFrame(raf.current);stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;setOutputReady(false);setRunning(false);setReady(false);setStatus("Camera is off")}
  function draw(){
-  const v=video.current,c=canvas.current,l=landmarker.current;if(!v||!c||!l)return;
-  const w=v.videoWidth||1280,h=v.videoHeight||720;
-  if(c.width!==w||c.height!==h){c.width=w;c.height=h}
-  const x=c.getContext("2d")!;x.clearRect(0,0,w,h);
-  x.save();if(mirror){x.translate(w,0);x.scale(-1,1)}x.drawImage(v,0,0,w,h);x.restore();
-  if(source.current&&sourceUrl&&source.current.complete){
-   const res=l.detectForVideo(v,performance.now()),p=res.faceLandmarks?.[0];
-   if(p){
-    const pt=(i:number)=>({x:p[i].x*w,y:p[i].y*h});
-    const left=pt(33),right=pt(263),nose=pt(1),chin=pt(152);
-    const dx=right.x-left.x,dy=right.y-left.y,angle=Math.atan2(dy,dx),eyeDist=Math.hypot(dx,dy);
-    const fw=eyeDist*2.22,fh=eyeDist*2.68,cx=nose.x,cy=nose.y+eyeDist*.38;
-    x.save();x.translate(mirror?w-cx:cx,cy);if(mirror)x.scale(-1,1);x.rotate(angle);
-    const g=x.createRadialGradient(0,0,fw*.18,0,0,fw*.62);g.addColorStop(0,"rgba(255,255,255,1)");g.addColorStop(.58,"rgba(255,255,255,.99)");g.addColorStop(.82,"rgba(255,255,255,.72)");g.addColorStop(1,"rgba(255,255,255,0)");
-    const mask=document.createElement("canvas");mask.width=Math.ceil(fw);mask.height=Math.ceil(fh);
-    const m=mask.getContext("2d")!;m.fillStyle=g;m.beginPath();m.ellipse(fw/2,fh/2,fw*.49,fh*.49,0,0,Math.PI*2);m.fill();
-    x.globalCompositeOperation="source-over";x.globalAlpha=.97;
-    x.drawImage(source.current,-fw/2,-fh/2,fw,fh);
-    x.globalCompositeOperation="destination-in";x.drawImage(mask,-fw/2,-fh/2,fw,fh);
-    x.restore();
-   }
-  }
+  const v=video.current,c=canvas.current,l=landmarker.current,img=source.current;if(!v||!c||!l)return;
+  const w=v.videoWidth||1280,h=v.videoHeight||720;if(c.width!==w||c.height!==h){c.width=w;c.height=h}
+  const x=c.getContext("2d")!;x.clearRect(0,0,w,h);x.save();if(mirror){x.translate(w,0);x.scale(-1,1)}x.drawImage(v,0,0,w,h);x.restore();
+  if(img&&sourceUrl&&img.complete&&sourcePoints.current&&swapTriangles){const res=l.detectForVideo(v,performance.now()),p=res.faceLandmarks?.[0];if(p){const target=SWAP_POINTS.map(i=>({x:p[i].x*w,y:p[i].y*h}));x.save();for(const t of swapTriangles){const s=t.flatMap(i=>[sourcePoints.current![i].x,sourcePoints.current![i].y]);const d=t.flatMap(i=>{const q=target[i];return[mirror?w-q.x:q.x,q.y]});warpTriangle(x,img,s,d,.94)}x.restore()}}
   raf.current=requestAnimationFrame(draw);
  }
- function upload(e:React.ChangeEvent<HTMLInputElement>){const f=e.target.files?.[0];if(!f)return;const url=URL.createObjectURL(f);setSourceUrl(url);if(source.current)source.current.src=url;setStatus(running?"Source loaded — output updated":"Source loaded — start the camera.")}
+ function upload(e:React.ChangeEvent<HTMLInputElement>){const f=e.target.files?.[0];if(!f)return;const url=URL.createObjectURL(f);setSourceUrl(url);sourcePoints.current=null;swapTriangles=null;if(source.current){source.current.onload=()=>{if(landmarker.current&&source.current){const r=landmarker.current.detect(source.current),p=r.faceLandmarks?.[0];if(p){sourcePoints.current=SWAP_POINTS.map(i=>({x:p[i].x*source.current!.naturalWidth,y:p[i].y*source.current!.naturalHeight}));swapTriangles=triangulate(sourcePoints.current);setStatus("Source face mapped — live swap ready")}else setStatus("No face detected in source image.")}};source.current.src=url}setStatus(running?"Analyzing source face…":"Source loaded — start the camera.")}
  function openOutput(){
   if(!output.current||!running){setStatus("Start the camera before opening the output.");return}
   const w=window.open("","liveface-output","width=960,height=620");
