@@ -30,8 +30,12 @@ export default function App(){
    if(c&&"captureStream" in c){output.current=c.captureStream(30);setOutputReady(true);(window as Window&{liveFaceOutput?:MediaStream}).liveFaceOutput=output.current}
    setRunning(true);setReady(true);setStatus(sourceUrl?"Live output active":"Live camera active — add a source face for the swap.");
    draw();
-  }catch(e){console.error(e);setStatus(e instanceof DOMException ? `Camera error: ${e.name}. Check browser permission and camera availability.` : `Camera/model error: ${e instanceof Error?e.message:"Unknown error"}`)}
- }
+  }catch(e){
+   console.error("LiveFace startup error:",e);
+   const detail=e instanceof DOMException?`${e.name}${e.message?`: ${e.message}`:""}`:e instanceof Error?`${e.name}: ${e.message}`:typeof e==="object"&&e!==null?JSON.stringify(e):String(e);
+   setStatus(`Camera/model error: ${detail||"Unknown error"}`);
+   stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;setOutputReady(false);setRunning(false);setReady(false);
+  }
  function stop(){cancelAnimationFrame(raf.current);stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;setOutputReady(false);setRunning(false);setReady(false);setStatus("Camera is off")}
  function draw(){
   const v=video.current,c=canvas.current,l=landmarker.current;if(!v||!c||!l)return;
