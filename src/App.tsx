@@ -18,22 +18,29 @@ export default function App(){
  }
  async function start(){
   if(!consent){setStatus("Confirm that you have permission to use the source face.");return}
+  let stage="camera permission";
   try{
    setStatus("Requesting camera…");
    stream.current=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:"user",...(deviceId?{deviceId:{exact:deviceId}}:{})},audio:true});
    await refreshDevices();
    if(video.current){video.current.srcObject=stream.current;await video.current.play()}
-   setStatus("Loading face tracking…");
+   stage="MediaPipe WASM";
+   setStatus("Loading face tracking engine…");
    const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm");
-   landmarker.current=await FaceLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:MODEL},runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.55,minTrackingConfidence:.55});
+   stage="face landmark model";
+   setStatus("Loading face landmark model…");
+   const modelResponse=await fetch(MODEL,{cache:"force-cache"});
+   if(!modelResponse.ok)throw new Error("Model download failed: HTTP "+modelResponse.status+" "+modelResponse.statusText);
+   const modelBuffer=new Uint8Array(await modelResponse.arrayBuffer());
+   landmarker.current=await FaceLandmarker.createFromOptions(vision,{baseOptions:{modelAssetBuffer:modelBuffer},runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.55,minTrackingConfidence:.55});
    const c=canvas.current;
    if(c&&"captureStream" in c){output.current=c.captureStream(30);setOutputReady(true);(window as Window&{liveFaceOutput?:MediaStream}).liveFaceOutput=output.current}
    setRunning(true);setReady(true);setStatus(sourceUrl?"Live output active":"Live camera active — add a source face for the swap.");
    draw();
   }catch(e){
-   console.error("LiveFace startup error:",e);
-   const detail=e instanceof DOMException?`${e.name}${e.message?`: ${e.message}`:""}`:e instanceof Error?`${e.name}: ${e.message}`:typeof e==="object"&&e!==null?JSON.stringify(e):String(e);
-   setStatus(`Camera/model error: ${detail||"Unknown error"}`);
+   console.error("LiveFace startup error:",{stage,error:e});
+   const detail=e instanceof DOMException?e.name+(e.message?": "+e.message:""):e instanceof Error?e.name+": "+e.message:e instanceof Event?(e.type||"resource")+" event":typeof e==="object"&&e!==null?String(e):String(e);
+   setStatus("Camera/model error ["+stage+"]: "+(detail||"Unknown error")+". Check camera permission and network access to MediaPipe.");
    stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;setOutputReady(false);setRunning(false);setReady(false);
   }
  }
