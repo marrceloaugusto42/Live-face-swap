@@ -36,6 +36,7 @@ export default function App(){
    setStatus(`Camera/model error: ${detail||"Unknown error"}`);
    stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;setOutputReady(false);setRunning(false);setReady(false);
   }
+ }
  function stop(){cancelAnimationFrame(raf.current);stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;setOutputReady(false);setRunning(false);setReady(false);setStatus("Camera is off")}
  function draw(){
   const v=video.current,c=canvas.current,l=landmarker.current;if(!v||!c||!l)return;
