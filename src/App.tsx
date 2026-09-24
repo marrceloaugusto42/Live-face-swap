@@ -8,15 +8,15 @@ export default function App(){
  const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null),source=useRef<HTMLImageElement>(null);
  const stream=useRef<MediaStream|null>(null),output=useRef<MediaStream|null>(null),landmarker=useRef<FaceLandmarker|null>(null),raf=useRef<number>(0),popup=useRef<Window|null>(null);
  const [running,setRunning]=useState(false),[sourceUrl,setSourceUrl]=useState(""),[status,setStatus]=useState("Camera is off");
- const [mirror,setMirror]=useState(true),[consent,setConsent]=useState(false),[ready,setReady]=useState(false),[outputReady,setOutputReady]=useState(false);
+ const [mirror,setMirror]=useState(true),[consent,setConsent]=useState(false),[ready,setReady]=useState(false),[outputReady,setOutputReady]=useState(false);\n const [devices,setDevices]=useState<MediaDeviceInfo[]>([]),[deviceId,setDeviceId]=useState("");
 
  useEffect(()=>()=>{cancelAnimationFrame(raf.current);stream.current?.getTracks().forEach(t=>t.stop());output.current?.getTracks().forEach(t=>t.stop());landmarker.current?.close();popup.current?.close()},[]);
 
- async function start(){
+ async function refreshDevices(){\n  try{const all=await navigator.mediaDevices.enumerateDevices();const cams=all.filter(d=>d.kind==="videoinput");setDevices(cams);if(!deviceId&&cams[0])setDeviceId(cams[0].deviceId)}catch(e){console.warn("Could not enumerate cameras",e)}\n }\n async function start(){
   if(!consent){setStatus("Confirm that you have permission to use the source face.");return}
   try{
    setStatus("Requesting camera…");
-   stream.current=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:"user"},audio:true});
+   stream.current=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:"user",...(deviceId?{deviceId:{exact:deviceId}}:{})},audio:true});\n   await refreshDevices();
    if(video.current){video.current.srcObject=stream.current;await video.current.play()}
    setStatus("Loading face tracking…");
    const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm");
@@ -27,7 +27,7 @@ export default function App(){
    draw();
   }catch(e){console.error(e);setStatus("Camera/model could not start. Use HTTPS and allow camera access.")}
  }
- function stop(){cancelAnimationFrame(raf.current);stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;setRunning(false);setReady(false);setStatus("Camera is off")}
+ function stop(){cancelAnimationFrame(raf.current);stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;setOutputReady(false);setRunning(false);setReady(false);setStatus("Camera is off")}
  function draw(){
   const v=video.current,c=canvas.current,l=landmarker.current;if(!v||!c||!l)return;
   const w=v.videoWidth||1280,h=v.videoHeight||720;
@@ -70,7 +70,7 @@ export default function App(){
    <aside>
     <div className="card"><div className="cardtitle">1 · Permission</div><label className="check"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/><span>I have permission to use the selected source face.</span></label></div>
     <div className="card"><div className="cardtitle">2 · Source face</div><label className="upload">{sourceUrl?<img src={sourceUrl} alt="Selected source"/>:<div className="uploadicon">＋</div>}<span>{sourceUrl?"Replace source image":"Choose a face image"}</span><input type="file" accept="image/*" onChange={upload}/></label><small className="hint">Use a clear, front-facing image you are authorized to use.</small></div>
-    <div className="card"><div className="cardtitle">3 · Camera + output</div><button className="primary" onClick={running?stop:start}>{running?"Stop camera":"Start camera"}</button><div className="outputrow"><button className="secondary" disabled={!outputReady||!running} onClick={openOutput}>Open output window</button><button className="secondary" disabled={!outputReady||!running} onClick={copyOutput}>Expose stream</button></div><div className="row"><span>Mirror preview</span><button className={"switch "+(mirror?"active":"")} onClick={()=>setMirror(!mirror)}><i/></button></div></div>
+    <div className="card"><div className="cardtitle">3 · Camera + output</div><select className="cameraSelect" value={deviceId} disabled={running||devices.length===0} onChange={e=>setDeviceId(e.target.value)}><option value="">{devices.length?"Select camera":"Camera will appear after permission"}</option>{devices.map(d=><option key={d.deviceId} value={d.deviceId}>{d.label||`Camera ${devices.indexOf(d)+1}`}</option>)}</select><button className="primary" onClick={running?stop:start}>{running?"Stop camera":"Start camera"}</button><div className="outputrow"><button className="secondary" disabled={!outputReady||!running} onClick={openOutput}>Open output window</button><button className="secondary" disabled={!outputReady||!running} onClick={copyOutput}>Expose stream</button></div><div className="row"><span>Mirror preview</span><button className={"switch "+(mirror?"active":"")} onClick={()=>setMirror(!mirror)}><i/></button></div></div>
     <div className="status"><span className={ready?"dot ready":"dot"}/>{status}</div>
    </aside>
   </section>
