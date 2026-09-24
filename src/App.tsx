@@ -45,14 +45,14 @@ export default function App(){
    stage="MediaPipe WASM";setStatus("Loading face tracking engine…");
    const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm");
    stage="face landmark model";setStatus("Loading face landmark model…");
-   landmarker.current=await FaceLandmarker.createFromModelPath(vision,MODEL); await landmarker.current.setOptions({runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.55,minFacePresenceConfidence:.55,minTrackingConfidence:.55});
+   try{landmarker.current=await FaceLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:MODEL,delegate:"CPU"},runningMode:"IMAGE",numFaces:1,minFaceDetectionConfidence:.55,minFacePresenceConfidence:.55,minTrackingConfidence:.55});await landmarker.current.setOptions({runningMode:"VIDEO"});}catch(primary){console.warn("MediaPipe model-path initialization failed; retrying from model buffer.",primary);const response=await fetch(MODEL,{mode:"cors",cache:"no-store"});if(!response.ok)throw new Error("Face model download failed: HTTP "+response.status);const buffer=await response.arrayBuffer();landmarker.current=await FaceLandmarker.createFromOptions(vision,{baseOptions:{modelAssetBuffer:new Uint8Array(buffer),delegate:"CPU"},runningMode:"IMAGE",numFaces:1,minFaceDetectionConfidence:.55,minFacePresenceConfidence:.55,minTrackingConfidence:.55});await landmarker.current.setOptions({runningMode:"VIDEO"});}
    const c=canvas.current;
    if(c&&"captureStream" in c){output.current=c.captureStream(30);setOutputReady(true);(window as Window&{liveFaceOutput?:MediaStream}).liveFaceOutput=output.current}
    setRunning(true);setReady(true);setStatus(sourceUrl?"Live output active":"Live camera active — add a source face for the swap.");draw();
   }catch(e){
    console.error("LiveFace startup error:",{stage,error:e});
    const detail=e instanceof DOMException?e.name+(e.message?": "+e.message:""):e instanceof Error?e.name+": "+e.message:e instanceof Event?(e.type||"resource")+" event":typeof e==="object"&&e!==null?String(e):String(e);
-   setStatus("Camera/model error ["+stage+"]: "+(detail||"Unknown error")+". Check camera permission and network access to MediaPipe.");
+   setStatus("Camera/model error ["+stage+"]: "+(detail||"Unknown error")+". MediaPipe could not initialize. Check the model download/network or browser permissions.");
    stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;setOutputReady(false);setRunning(false);setReady(false);
   }
  }
