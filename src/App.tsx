@@ -84,6 +84,5 @@ export default function App(){
   </section>
   <section className="how"><b>Virtual-camera workflow</b><span>LiveFace → Output Window → OBS Window Capture → OBS Virtual Camera → WhatsApp / Discord / other desktop apps.</span></section>
   <footer><span>Processed frames remain in the browser in this build.</span><span>Native social apps need a desktop virtual-camera layer; the browser alone cannot register an OS camera device.</span></footer>
- </section>
-</main>
+ </main>
 }
