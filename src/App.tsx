@@ -4,11 +4,12 @@ import {FaceLandmarker,FilesetResolver} from "@mediapipe/tasks-vision";
 const MODEL="https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 type OutputWindow=Window & {liveFaceOutput?: HTMLVideoElement};
 
-const SWAP_POINTS=[10,33,54,67,109,127,143,152,162,172,176,234,263,284,297,338,356,366,377,389,397,400,454,61,291,13,14,78,308,93,323,132,361,58,288,149,378,150,379,176,400,197,5,4,1,168,6,9,195,197,2,98,327,129,358,130,359,174,399,175,400];
+// Stable, unique landmarks around the face plus key expression/pose points.
+const SWAP_POINTS=[10,33,54,67,109,127,143,152,162,172,176,234,263,284,297,338,356,366,377,389,397,400,454,61,291,13,14,78,308,93,323,132,361,58,288,149,378,150,379,197,5,4,1,168,6,9,195,2,98,327,129,358,130,359,174,399,175];
+
 let swapTriangles:number[][]|null=null;
 function triangulate(points:{x:number;y:number}[]){
- const tris:number[][]=[];const n=points.length;
- const minX=Math.min(...points.map(p=>p.x)),maxX=Math.max(...points.map(p=>p.x)),minY=Math.min(...points.map(p=>p.y)),maxY=Math.max(...points.map(p=>p.y)),d=Math.max(maxX-minX,maxY-minY)*20||100,mx=(minX+maxX)/2,my=(minY+maxY)/2;
+ const n=points.length,minX=Math.min(...points.map(p=>p.x)),maxX=Math.max(...points.map(p=>p.x)),minY=Math.min(...points.map(p=>p.y)),maxY=Math.max(...points.map(p=>p.y)),d=Math.max(maxX-minX,maxY-minY)*20||100,mx=(minX+maxX)/2,my=(minY+maxY)/2;
  const pts=points.map((p,i)=>({x:p.x,y:p.y,i})).concat([{x:mx-d,y:my-d,i:n},{x:mx,y:my+d,i:n+1},{x:mx+d,y:my-d,i:n+2}]);
  const cc=(a:any,b:any,c:any)=>{const q=2*(a.x*(b.y-c.y)+b.x*(c.y-a.y)+c.x*(a.y-b.y));if(Math.abs(q)<1e-8)return{x:0,y:0,r:Infinity};const ux=((a.x*a.x+a.y*a.y)*(b.y-c.y)+(b.x*b.x+b.y*b.y)*(c.y-a.y)+(c.x*c.x+c.y*c.y)*(a.y-b.y))/q,uy=((a.x*a.x+a.y*a.y)*(c.x-b.x)+(b.x*b.x+b.y*b.y)*(a.x-c.x)+(c.x*c.x+c.y*c.y)*(b.x-a.x))/q;return{x:ux,y:uy,r:Math.hypot(ux-a.x,uy-a.y)}};
  let ts:number[][]=[[n,n+1,n+2]];
@@ -20,8 +21,6 @@ function warpTriangle(ctx:CanvasRenderingContext2D,img:HTMLImageElement,s:number
  const a=(u0*(y1-y2)+u1*(y2-y0)+u2*(y0-y1))/den,b=(v0*(y1-y2)+v1*(y2-y0)+v2*(y0-y1))/den,c=(u0*(x2-x1)+u1*(x0-x2)+u2*(x1-x0))/den,dv=(v0*(x2-x1)+v1*(x0-x2)+v2*(x1-x0))/den,e=(u0*(x1*y2-x2*y1)+u1*(x2*y0-x0*y2)+u2*(x0*y1-x1*y0))/den,f=(v0*(x1*y2-x2*y1)+v1*(x2*y0-x0*y2)+v2*(x0*y1-x1*y0))/den;
  ctx.save();ctx.globalAlpha=alpha;ctx.beginPath();ctx.moveTo(u0,v0);ctx.lineTo(u1,v1);ctx.lineTo(u2,v2);ctx.closePath();ctx.clip();ctx.setTransform(a,b,c,dv,e,f);ctx.drawImage(img,0,0);ctx.restore();
 }
-
-
 
 export default function App(){
  const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null),source=useRef<HTMLImageElement>(null);
@@ -43,19 +42,16 @@ export default function App(){
    stream.current=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:"user",...(deviceId?{deviceId:{exact:deviceId}}:{})},audio:true});
    await refreshDevices();
    if(video.current){video.current.srcObject=stream.current;await video.current.play()}
-   stage="MediaPipe WASM";
-   setStatus("Loading face tracking engine…");
+   stage="MediaPipe WASM";setStatus("Loading face tracking engine…");
    const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm");
-   stage="face landmark model";
-   setStatus("Loading face landmark model…");
+   stage="face landmark model";setStatus("Loading face landmark model…");
    const modelResponse=await fetch(MODEL,{cache:"force-cache"});
    if(!modelResponse.ok)throw new Error("Model download failed: HTTP "+modelResponse.status+" "+modelResponse.statusText);
    const modelBuffer=new Uint8Array(await modelResponse.arrayBuffer());
    landmarker.current=await FaceLandmarker.createFromOptions(vision,{baseOptions:{modelAssetBuffer:modelBuffer},runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.55,minTrackingConfidence:.55});
    const c=canvas.current;
    if(c&&"captureStream" in c){output.current=c.captureStream(30);setOutputReady(true);(window as Window&{liveFaceOutput?:MediaStream}).liveFaceOutput=output.current}
-   setRunning(true);setReady(true);setStatus(sourceUrl?"Live output active":"Live camera active — add a source face for the swap.");
-   draw();
+   setRunning(true);setReady(true);setStatus(sourceUrl?"Live output active":"Live camera active — add a source face for the swap.");draw();
   }catch(e){
    console.error("LiveFace startup error:",{stage,error:e});
    const detail=e instanceof DOMException?e.name+(e.message?": "+e.message:""):e instanceof Error?e.name+": "+e.message:e instanceof Event?(e.type||"resource")+" event":typeof e==="object"&&e!==null?String(e):String(e);
@@ -68,17 +64,11 @@ export default function App(){
   const v=video.current,c=canvas.current,l=landmarker.current,img=source.current;if(!v||!c||!l)return;
   const w=v.videoWidth||1280,h=v.videoHeight||720;if(c.width!==w||c.height!==h){c.width=w;c.height=h}
   const x=c.getContext("2d")!;x.clearRect(0,0,w,h);x.save();if(mirror){x.translate(w,0);x.scale(-1,1)}x.drawImage(v,0,0,w,h);x.restore();
-  if(img&&sourceUrl&&img.complete&&sourcePoints.current&&swapTriangles){const res=l.detectForVideo(v,performance.now()),p=res.faceLandmarks?.[0];if(p){const target=SWAP_POINTS.map(i=>({x:p[i].x*w,y:p[i].y*h}));x.save();for(const t of swapTriangles){const s=t.flatMap(i=>[sourcePoints.current![i].x,sourcePoints.current![i].y]);const d=t.flatMap(i=>{const q=target[i];return[mirror?w-q.x:q.x,q.y]});warpTriangle(x,img,s,d,.94)}x.restore()}}
+  if(img&&sourceUrl&&img.complete&&sourcePoints.current&&swapTriangles){const res=l.detectForVideo(v,performance.now()),p=res.faceLandmarks?.[0];if(p){const target=SWAP_POINTS.map(i=>({x:p[i].x*w,y:p[i].y*h}));x.save();for(const t of swapTriangles){const s=t.flatMap(i=>[sourcePoints.current![i].x,sourcePoints.current![i].y]);const d=t.flatMap(i=>{const q=target[i];return[mirror?w-q.x:q.x,q.y]});warpTriangle(x,img,s,d,.96)}x.restore()}}
   raf.current=requestAnimationFrame(draw);
  }
  function upload(e:React.ChangeEvent<HTMLInputElement>){const f=e.target.files?.[0];if(!f)return;const url=URL.createObjectURL(f);setSourceUrl(url);sourcePoints.current=null;swapTriangles=null;if(source.current){source.current.onload=()=>{if(landmarker.current&&source.current){const r=landmarker.current.detect(source.current),p=r.faceLandmarks?.[0];if(p){sourcePoints.current=SWAP_POINTS.map(i=>({x:p[i].x*source.current!.naturalWidth,y:p[i].y*source.current!.naturalHeight}));swapTriangles=triangulate(sourcePoints.current);setStatus("Source face mapped — live swap ready")}else setStatus("No face detected in source image.")}};source.current.src=url}setStatus(running?"Analyzing source face…":"Source loaded — start the camera.")}
- function openOutput(){
-  if(!output.current||!running){setStatus("Start the camera before opening the output.");return}
-  const w=window.open("","liveface-output","width=960,height=620");
-  if(!w){setStatus("Popup blocked. Allow popups for this site.");return}
-  popup.current=w;w.document.title="LiveFace Camera Output";w.document.body.style.cssText="margin:0;background:#000;overflow:hidden";
-  const v=w.document.createElement("video");v.autoplay=true;v.playsInline=true;v.muted=true;v.style.cssText="width:100vw;height:100vh;object-fit:contain";v.srcObject=output.current;w.document.body.appendChild(v);(w as OutputWindow).liveFaceOutput=v;
- }
+ function openOutput(){if(!output.current||!running){setStatus("Start the camera before opening the output.");return}const w=window.open("","liveface-output","width=960,height=620");if(!w){setStatus("Popup blocked. Allow popups for this site.");return}popup.current=w;w.document.title="LiveFace Camera Output";w.document.body.style.cssText="margin:0;background:#000;overflow:hidden";const v=w.document.createElement("video");v.autoplay=true;v.playsInline=true;v.muted=true;v.style.cssText="width:100vw;height:100vh;object-fit:contain";v.srcObject=output.current;w.document.body.appendChild(v);(w as OutputWindow).liveFaceOutput=v}
  function copyOutput(){if(output.current){(window as Window&{liveFaceOutput?:MediaStream}).liveFaceOutput=output.current;navigator.clipboard?.writeText("LiveFace output stream is available in this page as window.liveFaceOutput").catch(()=>{});setStatus("Output stream exposed as window.liveFaceOutput.")}}
  return <main>
   <header><div className="brand"><span className="mark">◉</span><div><b>LiveFace</b><small>SWAP STUDIO</small></div></div><span className="pill">OUTPUT READY</span></header>
@@ -94,5 +84,6 @@ export default function App(){
   </section>
   <section className="how"><b>Virtual-camera workflow</b><span>LiveFace → Output Window → OBS Window Capture → OBS Virtual Camera → WhatsApp / Discord / other desktop apps.</span></section>
   <footer><span>Processed frames remain in the browser in this build.</span><span>Native social apps need a desktop virtual-camera layer; the browser alone cannot register an OS camera device.</span></footer>
- </main>
+ </section>
+</main>
 }
