@@ -54,7 +54,7 @@ return false;
 async function start(){if(!consent){setStatus("Confirm that you have permission to use the source face.");return}try{setStatus("Requesting camera and microphone…");stream.current=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:"user",...(deviceId?{deviceId:{exact:deviceId}}:{})},audio:true});await refreshDevices();if(video.current){video.current.srcObject=stream.current;await video.current.play()}setRunning(true);setReady(true);setStatus("Live camera active — loading face tracking…");const c=canvas.current;if(c&&"captureStream" in c){await setupAudioProcessing();const base=c.captureStream(30);if(!output.current)output.current=base;const win=window as LiveFaceWindow;win.liveFaceOutput=output.current;win.liveFaceCallOutput=output.current;setOutputReady(true)}draw();await loadFaceLandmarker()}catch(e){console.error("LiveFace camera startup error:",e);const detail=e instanceof DOMException?e.name+(e.message?": "+e.message:""):e instanceof Error?e.name+": "+e.message:typeof e==="object"&&e!==null?String(e):String(e);setStatus("Camera error: "+(detail||"Unknown error")+". Check browser camera/microphone permission.");stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;audioContext.current?.close().catch(()=>{});audioContext.current=null;audioSource.current=null;audioDestination.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;setOutputReady(false);setRunning(false);setReady(false)}}
 function stop(){cancelAnimationFrame(raf.current);stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;audioContext.current?.close().catch(()=>{});audioContext.current=null;audioSource.current=null;audioDestination.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;const win=window as LiveFaceWindow;delete win.liveFaceAudioOutput;delete win.liveFaceCallOutput;delete win.liveFaceOutput;setOutputReady(false);setRunning(false);setReady(false);setStatus("Camera is off")}
 function draw(){
-const v=video.current,c=canvas.current,pl=poseLandmarker.current,img=source.current;
+const v=video.current,c=canvas.current,pl=poseLandmarker.current,lm=landmarker.current,img=source.current;
 if(!v||!c){raf.current=requestAnimationFrame(draw);return}
 const w=v.videoWidth||1280,h=v.videoHeight||720;
 if(c.width!==w||c.height!==h){c.width=w;c.height=h}
@@ -63,9 +63,15 @@ x.clearRect(0,0,w,h);
 
 // The live camera is used only as the motion/expression driver.
 // The uploaded image is the rendered person.
-if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&sourcePosePoints.current&&!sourceAnalyzing.current){
+if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&lm&&sourcePosePoints.current&&!sourceAnalyzing.current){
   try{
     const now=performance.now();
+    if(now-lastDetectAt.current>=66){
+      const fr=lm.detectForVideo(v,now);
+      const fp=fr.faceLandmarks?.[0];
+      if(fp) lastLivePoints.current=SWAP_POINTS.map(i=>fp[i]);
+      lastDetectAt.current=now;
+    }
     if(now-lastPoseAt.current>=66){
       const pr=pl.detectForVideo(v,now);
       const lp=pr.landmarks?.[0];
