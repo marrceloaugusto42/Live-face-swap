@@ -1,7 +1,7 @@
 import {useEffect,useRef,useState} from "react";
 import {FaceLandmarker,FilesetResolver} from "@mediapipe/tasks-vision";
 
-const MODEL="https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+const MODEL="/api/face-landmarker";
 type OutputWindow=Window & {liveFaceOutput?: HTMLVideoElement};
 type LiveFaceWindow=Window & {liveFaceOutput?: MediaStream;liveFaceAudioOutput?: MediaStream;liveFaceCallOutput?: MediaStream};
 
@@ -64,14 +64,14 @@ export default function App(){
    setStatus("Loading face tracking engine…");
    const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm");
    setStatus("Loading face landmark model…");
-   const create=()=>FaceLandmarker.createFromModelPath(vision,MODEL).then(async lm=>{await lm.setOptions({runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.55,minFacePresenceConfidence:.55,minTrackingConfidence:.55});return lm;});
+   const create=()=>FaceLandmarker.createFromModelPath(vision,MODEL).then(async lm=>{await lm.setOptions({runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.5,minFacePresenceConfidence:.5,minTrackingConfidence:.5});return lm;});
    landmarker.current=await Promise.race([create(),new Promise<never>((_,reject)=>setTimeout(()=>reject(new Error("Face model load timed out")),20000))]);
    if(source.current?.complete&&sourceUrl)analyzeSource();else setStatus(sourceUrl?"Face tracking ready — analyzing source image…":"Live camera active — add a source face for the swap.");
    return true;
   }catch(e){
    console.error("Face tracking initialization failed:",e);
    landmarker.current=null;
-   setStatus("Live camera is working. Face tracking is not loaded. Use Retry face tracking.");
+   const detail=e instanceof Error?e.message:String(e);\n   setStatus("Face tracking failed: "+detail+" — camera is still live. Retry face tracking.");
    return false;
   }
  }
