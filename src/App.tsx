@@ -102,32 +102,36 @@ if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&lm&&sourcePosePoints.curr
         y:q.y*h
       }));
 
-      // Stabilize the whole person around the torso. The torso determines
-      // translation and overall scale; individual joints only add controlled
-      // movement. This prevents noisy wrist/ankle detections from making the
-      // uploaded person wobble or "dance".
+      // The LIVE body is the motion authority. The uploaded photo's pose is
+      // used only as the source mesh correspondence; it must never limit or
+      // pull the live pose back toward the source posture.
+      //
+      // Keep the live skeleton coherent by using its already-smoothed points,
+      // rejecting very low-confidence joints, and gently damping distal joints
+      // toward the live torso. This preserves natural live movement without the
+      // "dancing" caused by independently stretching the source pose.
       const torsoIds=[11,12,23,24];
-      const sourceTorso=torsoIds.map(i=>sourcePose[i]);
-      const targetTorso=torsoIds.map(i=>rawTarget[i]);
       const avg=(pts:{x:number;y:number}[])=>pts.reduce((a,p)=>({x:a.x+p.x/pts.length,y:a.y+p.y/pts.length}),{x:0,y:0});
-      const sc=(a:{x:number;y:number}[],i:number,j:number)=>Math.hypot(a[i].x-a[j].x,a[i].y-a[j].y);
-      const sShoulder=Math.max(1,sc(sourcePose,11,12)), sHip=Math.max(1,sc(sourcePose,23,24));
-      const tShoulder=Math.max(1,sc(rawTarget,11,12)), tHip=Math.max(1,sc(rawTarget,23,24));
-      const sourceTor=avg(sourceTorso), targetTor=avg(targetTorso);
-      const bodyScale=Math.max(.75,Math.min(1.35,(tShoulder/sShoulder+tHip/sHip)/2));
-      const targetPose=sourcePose.map((sp,i)=>{
-        const dx=sp.x-sourceTor.x;
-        const dy=sp.y-sourceTor.y;
-        const sourceLen=Math.max(1,Math.hypot(dx,dy));
-        const liveDx=rawTarget[i].x-targetTor.x;
-        const liveDy=rawTarget[i].y-targetTor.y;
-        const liveLen=Math.hypot(liveDx,liveDy);
-        const maxStretch=sourceLen*bodyScale*1.55;
-        const safeLen=Math.min(liveLen,maxStretch);
-        const ratio=liveLen>1?safeLen/liveLen:1;
+      const targetTor=avg(torsoIds.map(i=>rawTarget[i]));
+      const liveShoulder=Math.max(1,Math.hypot(rawTarget[11].x-rawTarget[12].x,rawTarget[11].y-rawTarget[12].y));
+      const liveHip=Math.max(1,Math.hypot(rawTarget[23].x-rawTarget[24].x,rawTarget[23].y-rawTarget[24].y));
+      const bodyScale=Math.max(.82,Math.min(1.22,(liveShoulder/Math.max(1,w*.12)+liveHip/Math.max(1,w*.08))/2));
+      const targetPose=rawTarget.map((q:any,i:number)=>{
+        const visibility=lp[i]?.visibility??1;
+        if(visibility<0.35 && sourcePose[i]){
+          // When a joint is briefly occluded, hold it in a torso-relative
+          // position instead of letting one bad frame jerk the whole mesh.
+          const fallback=sourcePose[i];
+          const sourceTor=avg(torsoIds.map(j=>sourcePose[j]));
+          const dx=fallback.x-sourceTor.x,dy=fallback.y-sourceTor.y;
+          return {x:targetTor.x+dx*bodyScale,y:targetTor.y+dy*bodyScale};
+        }
+        // Live coordinates remain dominant. The small center correction only
+        // keeps the full uploaded person balanced around the live torso.
+        const gain=(i===15||i===16||i===27||i===28||i===31||i===32)?0.82:0.92;
         return {
-          x:targetTor.x+liveDx*ratio,
-          y:targetTor.y+liveDy*ratio
+          x:targetTor.x+(q.x-targetTor.x)*gain,
+          y:targetTor.y+(q.y-targetTor.y)*gain
         };
       });
 
