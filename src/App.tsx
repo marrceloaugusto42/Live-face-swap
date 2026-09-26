@@ -38,7 +38,7 @@ if(!response.ok)throw new Error("Face model download failed (HTTP "+response.sta
 const bytes=new Uint8Array(await response.arrayBuffer());
 if(bytes.byteLength<100000)throw new Error("Face model download was incomplete ("+bytes.byteLength+" bytes)");
 setStatus("Starting face tracking…");
-const lm=await FaceLandmarker.createFromOptions(vision,{baseOptions:{modelAssetBuffer:bytes},runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.5,minFacePresenceConfidence:.5,minTrackingConfidence:.5,outputFaceBlendshapes:false,outputFacialTransformationMatrixes:true});
+const lm=await FaceLandmarker.createFromModelBuffer(vision,bytes);await lm.setOptions({runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.5,minFacePresenceConfidence:.5,minTrackingConfidence:.5,outputFaceBlendshapes:false,outputFacialTransformationMatrixes:true});
 landmarker.current=lm;
 setStatus(source.current?.complete&&sourceUrl?"Face tracking ready — analyzing source image…":"Live camera active — add a source face for the swap.");
 if(source.current?.complete&&sourceUrl)analyzeSource();
