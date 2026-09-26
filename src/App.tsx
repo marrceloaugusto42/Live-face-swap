@@ -29,7 +29,7 @@ async function refreshDevices(){try{const all=await navigator.mediaDevices.enume
 async function loadFaceLandmarker(){
 try{
 setStatus("Loading face tracking engine…");
-const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm");
+const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm");
 setStatus("Loading face model…");
 const lm=await FaceLandmarker.createFromModelPath(vision,MODEL);
 setStatus("Starting face tracking…");
