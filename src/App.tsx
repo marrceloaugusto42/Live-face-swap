@@ -33,11 +33,11 @@ try{
 setStatus("Loading face tracking engine…");
 const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm");
 setStatus("Loading face model…");
-const lm=await FaceLandmarker.createFromModelPath(vision,MODEL);
+const lm=await FaceLandmarker.createFromModelPath(vision,MODEL);\nconst pl=await PoseLandmarker.createFromModelPath(vision,POSE_MODEL);
 setStatus("Starting face tracking…");
 await lm.setOptions({runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.5,minFacePresenceConfidence:.5,minTrackingConfidence:.5,outputFaceBlendshapes:false,outputFacialTransformationMatrixes:true});
-landmarker.current=lm;
-setStatus(source.current?.complete&&sourceUrl?"Face tracking ready — analyzing source image…":"Live camera active — add a source face for the swap.");
+landmarker.current=lm;\nawait pl.setOptions({runningMode:"VIDEO",numPoses:1,minPoseDetectionConfidence:.5,minPosePresenceConfidence:.5,minTrackingConfidence:.5,outputSegmentationMasks:false});\nposeLandmarker.current=pl;
+setStatus(source.current?.complete&&sourceUrl?"Face tracking ready — source analysis starting…":"Live camera active — add a source face for the swap.");
 if(source.current?.complete&&sourceUrl)void analyzeSource();
 return true;
 }catch(e){
