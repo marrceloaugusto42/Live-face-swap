@@ -63,11 +63,13 @@ if(c.width!==w||c.height!==h){c.width=w;c.height=h}
 const x=c.getContext("2d")!;
 x.clearRect(0,0,w,h);
 
-// Always keep the live camera as the environment/background.
-x.save();
-if(mirror){x.translate(w,0);x.scale(-1,1)}
-x.drawImage(v,0,0,w,h);
-x.restore();
+// Before the source person is ready, show the normal camera.
+if(!(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&sourcePosePoints.current&&sourceMask.current&&!sourceAnalyzing.current)){
+  x.save();
+  if(mirror){x.translate(w,0);x.scale(-1,1)}
+  x.drawImage(v,0,0,w,h);
+  x.restore();
+}
 
 if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&sourcePosePoints.current&&sourceMask.current&&!sourceAnalyzing.current){
   try{
@@ -91,7 +93,9 @@ if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&sourcePosePoints.current&
 
     const livePose=lastLivePose.current;
     const srcPose=sourcePosePoints.current;
-    if(livePose&&srcPose&&livePose.length===srcPose.length){
+    const liveResult=pl.detectForVideo(v,now);
+    const liveMask=liveResult.segmentationMasks?.[0];
+    if(livePose&&srcPose&&livePose.length===srcPose.length&&liveMask){
       // Use the same anatomical control points in both images. Add four
       // body-box anchors so the entire source image can deform, not just
       // the center of the skeleton.
@@ -141,8 +145,33 @@ if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&sourcePosePoints.current&
 
       px.globalCompositeOperation="destination-in";
       px.drawImage(warpedMask,0,0);
-      px.globalCompositeOperation="source-over";
+      // Remove the live user's silhouette from the camera so the live
+      // person cannot remain visible around the replacement.
+      const liveMaskCanvas=document.createElement("canvas");
+      liveMaskCanvas.width=liveMask.width;liveMaskCanvas.height=liveMask.height;
+      const lmc=liveMaskCanvas.getContext("2d")!;
+      const lv=liveMask.getAsFloat32Array();
+      const ld=lmc.createImageData(liveMaskCanvas.width,liveMaskCanvas.height);
+      for(let i=0;i<lv.length;i++){
+        const a=Math.max(0,Math.min(255,Math.round(lv[i]*255)));
+        const j=i*4;ld.data[j]=255;ld.data[j+1]=255;ld.data[j+2]=255;ld.data[j+3]=a;
+      }
+      lmc.putImageData(ld,0,0);
+
+      const backgroundLayer=document.createElement("canvas");
+      backgroundLayer.width=w;backgroundLayer.height=h;
+      const bx=backgroundLayer.getContext("2d")!;
+      bx.save();
+      if(mirror){bx.translate(w,0);bx.scale(-1,1)}
+      bx.drawImage(v,0,0,w,h);
+      bx.restore();
+      bx.globalCompositeOperation="destination-out";
+      bx.drawImage(liveMaskCanvas,0,0,w,h);
+      bx.globalCompositeOperation="source-over";
+
+      x.drawImage(backgroundLayer,0,0);
       x.drawImage(personLayer,0,0);
+      liveMask.close();
     }
   }catch(err){
     console.error("Full-body motion transfer failed:",err);
