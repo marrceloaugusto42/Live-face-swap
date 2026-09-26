@@ -81,7 +81,7 @@ if(img&&sourceUrl&&img.complete&&img.naturalWidth&&l&&sourcePoints.current&&swap
 
     if(p){
       const target=SWAP_POINTS.map(i=>({x:p[i].x*w,y:p[i].y*h}));
-      const mapped=target.map(q=>({x:mirror?w-q.x:q.x,y:q.y}));
+      const mapped=target.map(q=>({x:mirror ? (w - q.x) : q.x,y:q.y}));
       const boundary=[10,54,109,127,143,152,172,176,234,454,400,397,389,377,366,356,338,297,284,263,33];
 
       x.save();
@@ -100,7 +100,7 @@ if(img&&sourceUrl&&img.complete&&img.naturalWidth&&l&&sourcePoints.current&&swap
         const ss=t.flatMap(i=>[sourcePoints.current![i].x,sourcePoints.current![i].y]);
         const dd=t.flatMap(i=>{
           const q=target[i];
-          return[mirror?w-q.x:q.x,q.y];
+          return[mirror ? (w - q.x) : q.x,q.y];
         });
         warpTriangle(x,img,ss,dd,.98);
       }
@@ -126,7 +126,7 @@ if(img&&sourceUrl&&img.complete&&img.naturalWidth&&l&&sourcePoints.current&&swap
       const lp=lastLivePose.current;
       if(lp){
         const sourcePose=sourcePosePoints.current;
-        const targetPose=lp.map((q:any)=>({x:q.x*w,y:q.y*h})).map(q=>({x:mirror?w-q.x:q.x,y:q.y}));
+        const targetPose=lp.map((q:any)=>({x:q.x*w,y:q.y*h})).map(q=>({x:mirror ? (w - q.x) : q.x,y:q.y}));
         const sx=sourcePose.map(q=>q.x),sy=sourcePose.map(q=>q.y);
         const tx=targetPose.map(q=>q.x),ty=targetPose.map(q=>q.y);
 
@@ -145,7 +145,7 @@ if(img&&sourceUrl&&img.complete&&img.naturalWidth&&l&&sourcePoints.current&&swap
 
         if(p){
           const target=SWAP_POINTS.map(i=>({x:p[i].x*w,y:p[i].y*h}));
-          const mapped=target.map(q=>({x:mirror?w-q.x:q.x,y:q.y}));
+          const mapped=target.map(q=>({x:mirror ? (w - q.x) : q.x,y:q.y}));
           const boundary=[10,54,109,127,143,152,172,176,234,454,400,397,389,377,366,356,338,297,284,263,33];
 
           x.save();
@@ -164,7 +164,7 @@ if(img&&sourceUrl&&img.complete&&img.naturalWidth&&l&&sourcePoints.current&&swap
             const ss=t.flatMap(i=>[sourcePoints.current![i].x,sourcePoints.current![i].y]);
             const dd=t.flatMap(i=>{
               const q=target[i];
-              return[mirror?w-q.x:q.x,q.y];
+              return[mirror ? (w - q.x) : q.x,q.y];
             });
             warpTriangle(x,img,ss,dd,.98);
           }
