@@ -30,15 +30,10 @@ async function loadFaceLandmarker(){
 try{
 setStatus("Loading face tracking engine…");
 const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm");
-setStatus("Downloading face model…");
-const controller=new AbortController();const timer=window.setTimeout(()=>controller.abort(),30000);
-let response:Response;
-try{response=await fetch(MODEL,{mode:"cors",cache:"force-cache",signal:controller.signal})}finally{window.clearTimeout(timer)}
-if(!response.ok)throw new Error("Face model download failed (HTTP "+response.status+")");
-const bytes=new Uint8Array(await response.arrayBuffer());
-if(bytes.byteLength<100000)throw new Error("Face model download was incomplete ("+bytes.byteLength+" bytes)");
+setStatus("Loading face model…");
+const lm=await FaceLandmarker.createFromModelPath(vision,MODEL);
 setStatus("Starting face tracking…");
-const lm=await FaceLandmarker.createFromModelBuffer(vision,bytes);await lm.setOptions({runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.5,minFacePresenceConfidence:.5,minTrackingConfidence:.5,outputFaceBlendshapes:false,outputFacialTransformationMatrixes:true});
+await lm.setOptions({runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.5,minFacePresenceConfidence:.5,minTrackingConfidence:.5,outputFaceBlendshapes:false,outputFacialTransformationMatrixes:true});
 landmarker.current=lm;
 setStatus(source.current?.complete&&sourceUrl?"Face tracking ready — analyzing source image…":"Live camera active — add a source face for the swap.");
 if(source.current?.complete&&sourceUrl)analyzeSource();
@@ -46,8 +41,8 @@ return true;
 }catch(e){
 console.error("Face tracking initialization failed:",e);
 landmarker.current=null;
-const detail=e instanceof Error?e.message:(e instanceof DOMException?e.name+": "+e.message:"Unknown face-model error");
-setStatus("Face tracking failed: "+detail+". Camera is still live; retry face tracking.");
+const detail=e instanceof Error?e.name+": "+(e.message||""):e instanceof DOMException?e.name+": "+(e.message||""):typeof e==="object"&&e!==null?JSON.stringify(e):String(e);
+setStatus("Face tracking failed: "+(detail||"Unknown model error")+". Camera is still live; retry face tracking.");
 return false;
 }
 }
