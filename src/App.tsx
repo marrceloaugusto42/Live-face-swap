@@ -40,9 +40,9 @@ const pl=await PoseLandmarker.createFromModelPath(vision,POSE_MODEL);
 setStatus("Starting face tracking…");
 await lm.setOptions({runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.5,minFacePresenceConfidence:.5,minTrackingConfidence:.5,outputFaceBlendshapes:false,outputFacialTransformationMatrixes:true});
 landmarker.current=lm;
-await pl.setOptions({runningMode:"VIDEO",numPoses:1,minPoseDetectionConfidence:.5,minPosePresenceConfidence:.5,minTrackingConfidence:.5,outputSegmentationMasks:false});
+await pl.setOptions({runningMode:"VIDEO",numPoses:1,minPoseDetectionConfidence:.5,minPosePresenceConfidence:.5,minTrackingConfidence:.5,outputSegmentationMasks:true});
 poseLandmarker.current=pl;
-setStatus(source.current?.complete&&sourceUrl?"Face tracking ready — source analysis starting…":"Live camera active — add a full-body source image for motion transfer.");
+setStatus(source.current?.complete&&sourceUrl?"Motion-transfer engine ready — source analysis starting…":"Live camera active — add a full-body source image for motion transfer.");
 if(source.current?.complete&&sourceUrl)void analyzeSource();
 return true;
 }catch(e){
@@ -56,72 +56,172 @@ return false;
 async function start(){if(!consent){setStatus("Confirm that you have permission to use the source face.");return}try{setStatus("Requesting camera and microphone…");stream.current=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:"user",...(deviceId?{deviceId:{exact:deviceId}}:{})},audio:true});await refreshDevices();if(video.current){video.current.srcObject=stream.current;await video.current.play()}setRunning(true);setReady(true);setStatus("Live camera active — loading face tracking…");const c=canvas.current;if(c&&"captureStream" in c){await setupAudioProcessing();const base=c.captureStream(30);if(!output.current)output.current=base;const win=window as LiveFaceWindow;win.liveFaceOutput=output.current;win.liveFaceCallOutput=output.current;setOutputReady(true)}draw();await loadFaceLandmarker()}catch(e){console.error("LiveFace camera startup error:",e);const detail=e instanceof DOMException?e.name+(e.message?": "+e.message:""):e instanceof Error?e.name+": "+e.message:typeof e==="object"&&e!==null?String(e):String(e);setStatus("Camera error: "+(detail||"Unknown error")+". Check browser camera/microphone permission.");stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;audioContext.current?.close().catch(()=>{});audioContext.current=null;audioSource.current=null;audioDestination.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;setOutputReady(false);setRunning(false);setReady(false)}}
 function stop(){cancelAnimationFrame(raf.current);stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;audioContext.current?.close().catch(()=>{});audioContext.current=null;audioSource.current=null;audioDestination.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;const win=window as LiveFaceWindow;delete win.liveFaceAudioOutput;delete win.liveFaceCallOutput;delete win.liveFaceOutput;setOutputReady(false);setRunning(false);setReady(false);setStatus("Camera is off")}
 function draw(){
-const v=video.current,c=canvas.current,pl=poseLandmarker.current,lm=landmarker.current,img=sourcePerson.current;
+const v=video.current,c=canvas.current,pl=poseLandmarker.current,lm=landmarker.current,img=source.current;
 if(!v||!c){raf.current=requestAnimationFrame(draw);return}
 const w=v.videoWidth||1280,h=v.videoHeight||720;
 if(c.width!==w||c.height!==h){c.width=w;c.height=h}
 const x=c.getContext("2d")!;
 x.clearRect(0,0,w,h);
-if(img&&sourceUrl&&img.width&&pl&&sourcePosePoints.current&&!sourceAnalyzing.current){
+
+// The live camera supplies the motion. The uploaded full-body image supplies
+// the visible person. We do NOT render the uploaded photo as a rectangular
+// image or use the live person's body as the final body.
+x.save();
+if(mirror){x.translate(w,0);x.scale(-1,1)}
+x.drawImage(v,0,0,w,h);
+x.restore();
+
+if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&sourcePosePoints.current&&!sourceAnalyzing.current){
   try{
     const now=performance.now();
     if(now-lastPoseAt.current>=33){
-      const pr=pl.detectForVideo(v,now),pp=pr.landmarks?.[0];
-      if(pp){
-        const raw=POSE_POINTS.map(i=>pp[i]),prev=stableLivePose.current,alpha=.42;
-        stableLivePose.current=raw.map((q:any,i:number)=>{const p=prev?.[i];if(!p)return{x:q.x,y:q.y,z:q.z,visibility:q.visibility};return{x:p.x+(q.x-p.x)*alpha,y:p.y+(q.y-p.y)*alpha,z:(p.z??0)+((q.z??0)-(p.z??0))*alpha,visibility:q.visibility}});
+      const pr=pl.detectForVideo(v,now);
+      const live=pr.landmarks?.[0];
+      if(live){
+        const raw=live.map((q:any)=>({x:q.x,y:q.y,z:q.z,visibility:q.visibility}));
+        const prev=stableLivePose.current;
+        const alpha=.42;
+        stableLivePose.current=raw.map((q:any,i:number)=>{
+          const p=prev?.[i];
+          if(!p)return q;
+          return {
+            x:p.x+(q.x-p.x)*alpha,
+            y:p.y+(q.y-p.y)*alpha,
+            z:(p.z??0)+((q.z??0)-(p.z??0))*alpha,
+            visibility:q.visibility
+          };
+        });
         lastLivePose.current=stableLivePose.current;
       }
       lastPoseAt.current=now;
     }
-    x.save();if(mirror){x.translate(w,0);x.scale(-1,1)}x.drawImage(v,0,0,w,h);x.restore();
-    const live=lastLivePose.current,src=sourcePosePoints.current;
-    if(live&&src&&live.length===src.length){
-      const target=live.map((q:any)=>({x:mirror?(w-q.x*w):q.x*w,y:q.y*h}));
-      const tris=poseTriangles||triangulate(src);
-      x.save();for(const tri of tris){const ss=tri.flatMap(i=>[src[i].x,src[i].y]),dd=tri.flatMap(i=>[target[i].x,target[i].y]);warpTriangle(x,img,ss,dd,1)}x.restore();
-      if(lm&&sourcePoints.current){
-        if(now-lastDetectAt.current>=33){
-          const fr=lm.detectForVideo(v,now),fp=fr.faceLandmarks?.[0];
-          if(fp){
-            const raw=SWAP_POINTS.map(i=>fp[i]),prev=stableLivePoints.current,alpha=.5;
-            stableLivePoints.current=raw.map((q:any,i:number)=>{const p=prev?.[i];if(!p)return{x:q.x,y:q.y,z:q.z};return{x:p.x+(q.x-p.x)*alpha,y:p.y+(q.y-p.y)*alpha,z:(p.z??0)+((q.z??0)-(p.z??0))*alpha}});
-            lastLivePoints.current=stableLivePoints.current;
-          }
-          lastDetectAt.current=now;
-        }
-        const lf=lastLivePoints.current,sf=sourcePoints.current;
-        if(lf&&sf&&lf.length===sf.length){
-          const targetFace=lf.map((q:any)=>({x:mirror?(w-q.x*w):q.x*w,y:q.y*h})),ft=swapTriangles||triangulate(sf);
-          x.save();for(const tri of ft){const ss=tri.flatMap(i=>[sf[i].x,sf[i].y]),dd=tri.flatMap(i=>[targetFace[i].x,targetFace[i].y]);warpTriangle(x,img,ss,dd,1)}x.restore();
-        }
+
+    const livePose=lastLivePose.current;
+    const srcPose=sourcePosePoints.current;
+    if(livePose&&srcPose&&livePose.length===srcPose.length){
+      // Map the uploaded person's complete body pose onto the live pose.
+      // The uploaded person's original body proportions are preserved by
+      // anchoring the source mesh around the torso and scaling by torso width.
+      const sourceShoulders=Math.hypot(srcPose[11].x-srcPose[12].x,srcPose[11].y-srcPose[12].y)||1;
+      const liveShoulders=Math.hypot(livePose[11].x-livePose[12].x,livePose[11].y-livePose[12].y)||.1;
+      const scale=liveShoulders/sourceShoulders;
+
+      const srcCx=(srcPose[11].x+srcPose[12].x)/2;
+      const srcCy=(srcPose[11].y+srcPose[12].y)/2;
+      const liveCx=(livePose[11].x+livePose[12].x)/2;
+      const liveCy=(livePose[11].y+livePose[12].y)/2;
+
+      const sourceMesh=srcPose.map((q:any)=>({
+        x:(q.x-srcCx)*scale+srcCx,
+        y:(q.y-srcCy)*scale+srcCy
+      }));
+      const targetMesh=livePose.map((q:any)=>({
+        x:(mirror?(1-q.x):q.x)*w,
+        y:q.y*h
+      }));
+
+      // Scale/translate the source mesh into the live person's coordinate
+      // system while retaining the uploaded person's body shape.
+      const srcAnchor={x:srcCx,y:srcCy};
+      const dstAnchor={x:liveCx,y:liveCy};
+      const srcPx=sourceMesh.map((q:any)=>({x:q.x*img.naturalWidth,y:q.y*img.naturalHeight}));
+      const srcAnchorPx={x:srcAnchor.x*img.naturalWidth,y:srcAnchor.y*img.naturalHeight};
+
+      // Triangulate the full 33-point human skeleton. Each triangle carries
+      // actual pixels from the uploaded person, so clothing, hair, skin and
+      // body appearance move with the live pose instead of using the live body.
+      const meshTriangles=triangulate(srcPx);
+      x.save();
+      x.globalCompositeOperation="source-over";
+      for(const tri of meshTriangles){
+        const src=tri.flatMap(i=>[srcPx[i].x,srcPx[i].y]);
+        const dst=tri.flatMap(i=>[
+          dstAnchor.x*w+(targetMesh[i].x-liveCx*w),
+          dstAnchor.y*h+(targetMesh[i].y-liveCy*h)
+        ]);
+        warpTriangle(x,img,src,dst,1);
       }
+      x.restore();
+
+      // Hide most of the uploaded photo background by clipping the final
+      // person to a pose-derived silhouette. This keeps the live camera
+      // background visible rather than bringing the source photo background.
+      const hull=convexHull(targetMesh.map((p:any)=>({x:p.x,y:p.y})));
+      if(hull.length>=3){
+        x.save();
+        x.globalCompositeOperation="destination-in";
+        x.beginPath();
+        hull.forEach((i:number,j:number)=>{
+          const p=targetMesh[i];
+          if(j===0)x.moveTo(p.x,p.y);else x.lineTo(p.x,p.y);
+        });
+        x.closePath();
+        x.fill();
+        x.restore();
+      }
+    }else if(sourcePosePoints.current){
+      setStatus("Stand fully in frame so the live body can drive the uploaded person.");
     }
-  }catch(err){console.error("Full-person motion transfer failed:",err)}
-}else{
-  x.save();if(mirror){x.translate(w,0);x.scale(-1,1)}x.drawImage(v,0,0,w,h);x.restore();
+  }catch(err){
+    console.error("Full-body motion transfer failed:",err);
+  }
+}else if(img&&sourceUrl&&!sourcePosePoints.current&&!sourceAnalyzing.current){
+  setStatus("Upload a clear full-body person image for motion transfer.");
 }
+
 raf.current=requestAnimationFrame(draw);
 }
-async function analyzeSource(){const img=source.current,l=landmarker.current,pl=poseLandmarker.current;if(!img||!img.complete||!img.naturalWidth||!l||!pl||sourceAnalyzing.current)return false;sourceAnalyzing.current=true;try{
-setStatus("Analyzing full-body source…");await l.setOptions({runningMode:"IMAGE"});
-const max=1024,scale=Math.min(1,max/img.naturalWidth,max/img.naturalHeight),sw=Math.max(1,Math.round(img.naturalWidth*scale)),sh=Math.max(1,Math.round(img.naturalHeight*scale));
-const probe=document.createElement("canvas");probe.width=sw;probe.height=sh;probe.getContext("2d")!.drawImage(img,0,0,sw,sh);
-const r=l.detect(probe),p=r.faceLandmarks?.[0];await l.setOptions({runningMode:"VIDEO"});
-await pl.setOptions({runningMode:"IMAGE",outputSegmentationMasks:true});const body=pl.detect(probe),bp=body.landmarks?.[0];
-await pl.setOptions({runningMode:"VIDEO",outputSegmentationMasks:false});
-if(!bp){setStatus("No full person detected — upload a clear full-body image.");return false}
-if(!p){setStatus("No face detected — upload a clear full-body image with the face visible.");return false}
-sourcePosePoints.current=POSE_POINTS.map(i=>({x:bp[i].x*img.naturalWidth,y:bp[i].y*img.naturalHeight}));
-poseTriangles=triangulate(sourcePosePoints.current);sourcePoints.current=SWAP_POINTS.map(i=>({x:p[i].x*img.naturalWidth,y:p[i].y*img.naturalHeight}));swapTriangles=triangulate(sourcePoints.current);
-const person=document.createElement("canvas");person.width=img.naturalWidth;person.height=img.naturalHeight;const pc=person.getContext("2d")!;pc.drawImage(img,0,0);pc.globalCompositeOperation="destination-in";
-const pts=sourcePosePoints.current,shoulder=Math.max(12,Math.hypot(pts[11].x-pts[12].x,pts[11].y-pts[12].y));pc.lineCap="round";pc.lineJoin="round";pc.strokeStyle="rgba(255,255,255,1)";pc.fillStyle="rgba(255,255,255,1)";
-for(const [a,b] of POSE_CONNECTIONS){const pa=pts[a],pb=pts[b];pc.lineWidth=Math.max(shoulder*.12,10);pc.beginPath();pc.moveTo(pa.x,pa.y);pc.lineTo(pb.x,pb.y);pc.stroke()}
-const torso=[pts[11],pts[12],pts[24],pts[23]];pc.beginPath();torso.forEach((q,i)=>i?pc.lineTo(q.x,q.y):pc.moveTo(q.x,q.y));pc.closePath();pc.fill();
-for(const q of pts){pc.beginPath();pc.arc(q.x,q.y,Math.max(shoulder*.08,10),0,Math.PI*2);pc.fill()}
-sourcePerson.current=person;setStatus("Full-body source ready — live camera controls the movement.");return true;
-}catch(e){console.error("Full-body source analysis failed",e);try{await l.setOptions({runningMode:"VIDEO"})}catch{}try{await pl.setOptions({runningMode:"VIDEO",outputSegmentationMasks:false})}catch{}sourcePoints.current=null;sourcePosePoints.current=null;sourcePerson.current=null;poseTriangles=null;swapTriangles=null;setStatus("Full-body analysis failed — use a clear, upright full-body photo.");return false}finally{sourceAnalyzing.current=false}}
-function upload(e:React.ChangeEvent<HTMLInputElement>){const f=e.target.files?.[0];if(!f)return;const url=URL.createObjectURL(f);setSourceUrl(url);sourcePoints.current=null;sourcePosePoints.current=null;sourcePerson.current=null;poseTriangles=null;swapTriangles=null;lastLivePose.current=null;stableLivePose.current=null;stableLivePoints.current=null;if(source.current){source.current.onload=async()=>{const ok=await analyzeSource();if(!ok&&!landmarker.current)setStatus("Source loaded — face tracker is still loading…");};source.current.src=url}setStatus(running?"Analyzing source face…":"Source loaded — start the camera.")}
+async function analyzeSource(){
+const img=source.current,l=landmarker.current,pl=poseLandmarker.current;
+if(!img||!img.complete||!img.naturalWidth||!l||!pl||sourceAnalyzing.current)return false;
+sourceAnalyzing.current=true;
+try{
+  setStatus("Analyzing full-body source image…");
+  await l.setOptions({runningMode:"IMAGE"});
+  await pl.setOptions({runningMode:"IMAGE"});
+  const max=1024;
+  const scale=Math.min(1,max/img.naturalWidth,max/img.naturalHeight);
+  const sw=Math.max(1,Math.round(img.naturalWidth*scale));
+  const sh=Math.max(1,Math.round(img.naturalHeight*scale));
+  const probe=document.createElement("canvas");
+  probe.width=sw;probe.height=sh;
+  probe.getContext("2d")!.drawImage(img,0,0,sw,sh);
+
+  const body=pl.detect(probe);
+  const bp=body.landmarks?.[0];
+  if(!bp){
+    sourcePoints.current=null;
+    sourcePosePoints.current=null;
+    swapTriangles=null;
+    setStatus("No full body detected — upload a clear full-body person image.");
+    return false;
+  }
+
+  // Face tracking is retained for alignment/expression support, but the
+  // uploaded source is now treated as a complete person, not a face crop.
+  const r=l.detect(probe);
+  const p=r.faceLandmarks?.[0];
+
+  sourcePosePoints.current=bp.map((q:any)=>({x:q.x,y:q.y,z:q.z}));
+  sourcePoints.current=p?SWAP_POINTS.map(i=>({x:p[i].x*img.naturalWidth,y:p[i].y*img.naturalHeight})):null;
+  swapTriangles=null;
+
+  await l.setOptions({runningMode:"VIDEO"});
+  await pl.setOptions({runningMode:"VIDEO"});
+  setStatus("Full-body source ready — live pose now drives the uploaded person.");
+  return true;
+}catch(e){
+  console.error("Source full-body analysis failed",e);
+  try{await l.setOptions({runningMode:"VIDEO"})}catch{}
+  try{await pl.setOptions({runningMode:"VIDEO"})}catch{}
+  sourcePoints.current=null;
+  sourcePosePoints.current=null;
+  swapTriangles=null;
+  setStatus("Full-body source analysis failed — upload a clear full-body image and retry.");
+  return false;
+}finally{sourceAnalyzing.current=false}
+}
+function upload(e:React.ChangeEvent<HTMLInputElement>){const f=e.target.files?.[0];if(!f)return;const url=URL.createObjectURL(f);setSourceUrl(url);sourcePoints.current=null;sourcePosePoints.current=null;sourcePerson.current=null;poseTriangles=null;swapTriangles=null;lastLivePose.current=null;stableLivePose.current=null;stableLivePoints.current=null;if(source.current){source.current.onload=async()=>{const ok=await analyzeSource();if(!ok&&!landmarker.current)setStatus("Source loaded — face tracker is still loading…");};source.current.src=url}setStatus(running?"Analyzing full-body source…":"Source loaded — start the camera and use a full-body source.")}
 function openOutput(){if(!output.current||!running){setStatus("Start the camera before opening the output.");return}const w=window.open("","liveface-output","width=960,height=620");if(!w){setStatus("Popup blocked. Allow popups for this site.");return}popup.current=w;w.document.title="LiveFace Camera Output";w.document.body.style.cssText="margin:0;background:#000;overflow:hidden";const v=w.document.createElement("video");v.autoplay=true;v.playsInline=true;v.muted=false;v.volume=1;v.style.cssText="width:100vw;height:100vh;object-fit:contain";v.srcObject=output.current;w.document.body.appendChild(v);(w as OutputWindow).liveFaceOutput=v}
 function copyOutput(){if(output.current){const win=window as LiveFaceWindow;win.liveFaceOutput=output.current;win.liveFaceCallOutput=output.current;navigator.clipboard?.writeText("LiveFace processed call stream is available as window.liveFaceCallOutput").catch(()=>{});setStatus("Processed camera + microphone stream exposed as window.liveFaceCallOutput.")}}
 return <main>
