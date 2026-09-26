@@ -107,10 +107,34 @@ export default function App(){
  }
  function stop(){cancelAnimationFrame(raf.current);stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;audioContext.current?.close().catch(()=>{});audioContext.current=null;audioSource.current=null;audioDestination.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;const win=window as LiveFaceWindow;delete win.liveFaceAudioOutput;delete win.liveFaceCallOutput;delete win.liveFaceOutput;setOutputReady(false);setRunning(false);setReady(false);setStatus("Camera is off")}
  function draw(){
-  const v=video.current,c=canvas.current,l=landmarker.current,img=source.current;if(!v||!c){raf.current=requestAnimationFrame(draw);return;}
-  const w=v.videoWidth||1280,h=v.videoHeight||720;if(c.width!==w||c.height!==h){c.width=w;c.height=h}
-  const x=c.getContext("2d")!;x.clearRect(0,0,w,h);x.save();if(mirror){x.translate(w,0);x.scale(-1,1)}x.drawImage(v,0,0,w,h);x.restore();
-  if(img&&sourceUrl&&img.complete&&l){const res=l.detectForVideo(v,performance.now()),p=res.faceLandmarks?.[0];if(p&&sourcePoints.current&&swapTriangles){const target=SWAP_POINTS.map(i=>({x:p[i].x*w,y:p[i].y*h}));x.save();for(const t of swapTriangles){const s=t.flatMap(i=>[sourcePoints.current![i].x,sourcePoints.current![i].y]);const d=t.flatMap(i=>{const q=target[i];return[mirror?w-q.x:q.x,q.y]});warpTriangle(x,img,s,d,.96)}x.restore()}}
+  const v=video.current,c=canvas.current,l=landmarker.current,img=source.current;
+  if(!v||!c){raf.current=requestAnimationFrame(draw);return;}
+  const w=v.videoWidth||1280,h=v.videoHeight||720;
+  if(c.width!==w||c.height!==h){c.width=w;c.height=h}
+  const x=c.getContext("2d")!;
+  x.clearRect(0,0,w,h);
+  x.save();if(mirror){x.translate(w,0);x.scale(-1,1)}x.drawImage(v,0,0,w,h);x.restore();
+
+  if(img&&sourceUrl&&img.complete&&img.naturalWidth&&l&&sourcePoints.current&&swapTriangles){
+   try{
+    const res=l.detectForVideo(v,performance.now()),p=res.faceLandmarks?.[0];
+    if(p){
+     const target=SWAP_POINTS.map(i=>({x:p[i].x*w,y:p[i].y*h}));
+     const mapped=target.map(q=>({x:mirror?w-q.x:q.x,y:q.y}));
+     const boundary=[10,54,109,127,143,152,172,176,234,454,400,397,389,377,366,356,338,297,284,263,33];
+     x.save();x.globalCompositeOperation="source-over";
+     x.beginPath();
+     boundary.forEach((idx,j)=>{const k=SWAP_POINTS.indexOf(idx);if(k<0)return;const q=mapped[k];j?x.lineTo(q.x,q.y):x.moveTo(q.x,q.y)});
+     x.closePath();x.clip();
+     for(const t of swapTriangles){
+      const s=t.flatMap(i=>[sourcePoints.current![i].x,sourcePoints.current![i].y]);
+      const d=t.flatMap(i=>{const q=target[i];return[mirror?w-q.x:q.x,q.y]});
+      warpTriangle(x,img,s,d,.98);
+     }
+     x.restore();
+    }
+   }catch(err){console.error("Live face render failed:",err)}
+  }
   raf.current=requestAnimationFrame(draw);
  }
  function analyzeSource(){const img=source.current,l=landmarker.current;if(!img||!img.complete||!l)return false;try{const r=l.detect(img),p=r.faceLandmarks?.[0];if(!p){sourcePoints.current=null;swapTriangles=null;setStatus("No face detected in source image — choose a clear front-facing photo.");return false}sourcePoints.current=SWAP_POINTS.map(i=>({x:p[i].x*img.naturalWidth,y:p[i].y*img.naturalHeight}));swapTriangles=triangulate(sourcePoints.current);setStatus("Source face mapped — live swap ready");return true}catch(e){console.error("Source face analysis failed",e);return false}}
