@@ -60,50 +60,92 @@ const w=v.videoWidth||1280,h=v.videoHeight||720;
 if(c.width!==w||c.height!==h){c.width=w;c.height=h}
 const x=c.getContext("2d")!;
 x.clearRect(0,0,w,h);
-x.save();
-if(mirror){x.translate(w,0);x.scale(-1,1)}
-x.drawImage(v,0,0,w,h);
-x.restore();
 
+// The live camera is used only as the motion/expression driver.
+// The uploaded image is the rendered person.
 if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&sourcePosePoints.current&&!sourceAnalyzing.current){
   try{
-    const poseNow=performance.now();
-    if(poseNow-lastPoseAt.current>=100){
-      const pr=pl.detectForVideo(v,poseNow);
+    const now=performance.now();
+    if(now-lastPoseAt.current>=66){
+      const pr=pl.detectForVideo(v,now);
       const lp=pr.landmarks?.[0];
       if(lp){
         lastLivePose.current=lp;
-        lastPoseAt.current=poseNow;
+        lastPoseAt.current=now;
       }
     }
 
     const lp=lastLivePose.current;
-    if(lp){
-      const sourcePose=sourcePosePoints.current;
-      const targetPose=lp.map((q:any)=>({x:q.x*w,y:q.y*h})).map(q=>({x:mirror ? (w-q.x) : q.x,y:q.y}));
-      const sx=sourcePose.map(q=>q.x),sy=sourcePose.map(q=>q.y);
-      const tx=targetPose.map(q=>q.x),ty=targetPose.map(q=>q.y);
+    const sourcePose=sourcePosePoints.current;
+    if(lp&&sourcePose&&sourcePose.length===lp.length){
+      // Mirror the live control points exactly as the preview does.
+      const targetPose=lp.map((q:any)=>({
+        x:mirror ? (w-q.x*w) : q.x*w,
+        y:q.y*h
+      }));
+
+      // Add image corners so the WHOLE uploaded photograph participates in
+      // the deformation, not just the body hull.
+      const sx=sourcePose.map(q=>q.x), sy=sourcePose.map(q=>q.y);
+      const tx=targetPose.map(q=>q.x), ty=targetPose.map(q=>q.y);
       const sMinX=Math.min(...sx),sMaxX=Math.max(...sx),sMinY=Math.min(...sy),sMaxY=Math.max(...sy);
       const tMinX=Math.min(...tx),tMaxX=Math.max(...tx),tMinY=Math.min(...ty),tMaxY=Math.max(...ty);
       const sw=Math.max(1,sMaxX-sMinX),sh=Math.max(1,sMaxY-sMinY);
       const tw=Math.max(1,tMaxX-tMinX),th=Math.max(1,tMaxY-tMinY);
+      const cornerSource=[
+        {x:0,y:0},{x:img.naturalWidth,y:0},
+        {x:img.naturalWidth,y:img.naturalHeight},{x:0,y:img.naturalHeight}
+      ];
+      const cornerTarget=[
+        {x:tMinX+(0-sMinX)/sw*tw,y:tMinY+(0-sMinY)/sh*th},
+        {x:tMinX+(img.naturalWidth-sMinX)/sw*tw,y:tMinY+(0-sMinY)/sh*th},
+        {x:tMinX+(img.naturalWidth-sMinX)/sw*tw,y:tMinY+(img.naturalHeight-sMinY)/sh*th},
+        {x:tMinX+(0-sMinX)/sw*tw,y:tMinY+(img.naturalHeight-sMinY)/sh*th}
+      ];
 
-      // Keep the uploaded image completely intact: fit the ENTIRE image inside
-      // the live pose area instead of cropping it or drawing a second live face.
-      const scale=Math.min(tw/img.naturalWidth,th/img.naturalHeight);
-      const dw=img.naturalWidth*scale;
-      const dh=img.naturalHeight*scale;
-      const dx=tMinX+(tw-dw)/2;
-      const dy=tMinY+(th-dh)/2;
+      const srcMesh=sourcePose.concat(cornerSource);
+      const dstMesh=targetPose.concat(cornerTarget);
+      const triangles=triangulate(srcMesh);
 
       x.save();
       x.globalCompositeOperation="source-over";
-      x.drawImage(img,dx,dy,dw,dh);
+      for(const tri of triangles){
+        const s=tri.flatMap(i=>[srcMesh[i].x,srcMesh[i].y]);
+        const d=tri.flatMap(i=>[dstMesh[i].x,dstMesh[i].y]);
+        warpTriangle(x,img,s,d,1);
+      }
       x.restore();
+
+      // Face landmarks are expression/mouth controls. They deform the
+      // uploaded face itself; the live face is never painted over it.
+      const liveFace=lastLivePoints.current;
+      const srcFace=sourcePoints.current;
+      if(liveFace&&srcFace&&liveFace.length===srcFace.length){
+        const liveFaceTarget=liveFace.map((q:any)=>({
+          x:mirror ? (w-q.x*w) : q.x*w,
+          y:q.y*h
+        }));
+        const faceTriangles=swapTriangles||triangulate(srcFace);
+        x.save();
+        x.globalCompositeOperation="source-over";
+        for(const tri of faceTriangles){
+          const s=tri.flatMap(i=>[srcFace[i].x,srcFace[i].y]);
+          const d=tri.flatMap(i=>[liveFaceTarget[i].x,liveFaceTarget[i].y]);
+          warpTriangle(x,img,s,d,1);
+        }
+        x.restore();
+      }
     }
   }catch(err){
-    console.error("Live uploaded-image render failed:",err);
+    console.error("Live uploaded-image deformation failed:",err);
   }
+}else{
+  // Before source analysis is complete, keep the camera visible so the app
+  // remains responsive and does not flash a stale/partial source.
+  x.save();
+  if(mirror){x.translate(w,0);x.scale(-1,1)}
+  x.drawImage(v,0,0,w,h);
+  x.restore();
 }
 
 raf.current=requestAnimationFrame(draw);
