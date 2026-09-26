@@ -17,7 +17,7 @@ function warpTriangle(ctx:CanvasRenderingContext2D,img:HTMLImageElement,s:number
 export default function App(){
 const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null),source=useRef<HTMLImageElement>(null);
 const stream=useRef<MediaStream|null>(null),output=useRef<MediaStream|null>(null),landmarker=useRef<FaceLandmarker|null>(null),poseLandmarker=useRef<PoseLandmarker|null>(null),raf=useRef<number>(0),popup=useRef<Window|null>(null),sourcePoints=useRef<{x:number;y:number}[]|null>(null),sourcePosePoints=useRef<{x:number;y:number}[]|null>(null);
-const audioContext=useRef<AudioContext|null>(null),audioSource=useRef<MediaStreamAudioSourceNode|null>(null),audioDestination=useRef<MediaStreamAudioDestinationNode|null>(null),lastVideoTime=useRef(-1),lastDetectAt=useRef(0),lastPoseAt=useRef(0),lastLivePoints=useRef<any[]|null>(null),lastLivePose=useRef<any[]|null>(null),stableLivePose=useRef<{x:number;y:number;z?:number;visibility?:number}[]|null>(null),sourceAnalyzing=useRef(false);
+const audioContext=useRef<AudioContext|null>(null),audioSource=useRef<MediaStreamAudioSourceNode|null>(null),audioDestination=useRef<MediaStreamAudioDestinationNode|null>(null),lastVideoTime=useRef(-1),lastDetectAt=useRef(0),lastPoseAt=useRef(0),lastLivePoints=useRef<any[]|null>(null),lastLivePose=useRef<any[]|null>(null),stableLivePoints=useRef<{x:number;y:number;z?:number}[]|null>(null),stableLivePose=useRef<{x:number;y:number;z?:number;visibility?:number}[]|null>(null),sourceAnalyzing=useRef(false);
 const [running,setRunning]=useState(false),[sourceUrl,setSourceUrl]=useState(""),[status,setStatus]=useState("Camera is off");
 const [mirror,setMirror]=useState(true),[consent,setConsent]=useState(false),[ready,setReady]=useState(false),[outputReady,setOutputReady]=useState(false);
 const [devices,setDevices]=useState<MediaDeviceInfo[]>([]),[deviceId,setDeviceId]=useState("");
@@ -63,134 +63,60 @@ x.clearRect(0,0,w,h);
 
 // The live camera is used only as the motion/expression driver.
 // The uploaded image is the rendered person.
-if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&lm&&sourcePosePoints.current&&!sourceAnalyzing.current){
+if(img&&sourceUrl&&img.complete&&img.naturalWidth&&lm&&sourcePoints.current&&!sourceAnalyzing.current){
   try{
     const now=performance.now();
-    if(now-lastDetectAt.current>=66){
+
+    // The live camera is the complete video/body. The uploaded photo
+    // contributes only the face identity and appearance.
+    if(now-lastDetectAt.current>=33){
       const fr=lm.detectForVideo(v,now);
       const fp=fr.faceLandmarks?.[0];
-      if(fp) lastLivePoints.current=SWAP_POINTS.map(i=>fp[i]);
+      if(fp){
+        const raw=SWAP_POINTS.map(i=>fp[i]);
+        const prev=stableLivePoints.current;
+        const alpha=.28;
+        stableLivePoints.current=raw.map((q:any,i:number)=>{
+          const p=prev?.[i];
+          if(!p)return {x:q.x,y:q.y,z:q.z};
+          return {x:p.x+(q.x-p.x)*alpha,y:p.y+(q.y-p.y)*alpha,z:(p.z??0)+((q.z??0)-(p.z??0))*alpha};
+        });
+        lastLivePoints.current=stableLivePoints.current;
+      }
       lastDetectAt.current=now;
     }
-    if(now-lastPoseAt.current>=66){
-      const pr=pl.detectForVideo(v,now);
-      const lp=pr.landmarks?.[0];
-      if(lp){
-        lastLivePose.current=lp;
-        const prev=stableLivePose.current;
-        const alpha=.16;
-        stableLivePose.current=lp.map((q:any,i:number)=>{
-          const p=prev?.[i];
-          if(!p)return {x:q.x,y:q.y,z:q.z,visibility:q.visibility};
-          return {
-            x:p.x+(q.x-p.x)*alpha,
-            y:p.y+(q.y-p.y)*alpha,
-            z:(p.z??0)+((q.z??0)-(p.z??0))*alpha,
-            visibility:q.visibility
-          };
-        });
-        lastPoseAt.current=now;
-      }
-    }
 
-    const lp=stableLivePose.current;
-    const sourcePose=sourcePosePoints.current;
-    if(lp&&sourcePose&&sourcePose.length===lp.length){
-      // Mirror the live control points exactly as the preview does.
-      const rawTarget=lp.map((q:any)=>({
+    // Always render the real live video first. No uploaded background,
+    // clothing, body or source-pose deformation is rendered.
+    x.save();
+    if(mirror){x.translate(w,0);x.scale(-1,1)}
+    x.drawImage(v,0,0,w,h);
+    x.restore();
+
+    const liveFace=lastLivePoints.current;
+    const srcFace=sourcePoints.current;
+    if(liveFace&&srcFace&&liveFace.length===srcFace.length){
+      const liveFaceTarget=liveFace.map((q:any)=>({
         x:mirror ? (w-q.x*w) : q.x*w,
         y:q.y*h
       }));
+      const faceTriangles=swapTriangles||triangulate(srcFace);
 
-      // The LIVE body is the motion authority. The uploaded photo's pose is
-      // used only as the source mesh correspondence; it must never limit or
-      // pull the live pose back toward the source posture.
-      //
-      // Keep the live skeleton coherent by using its already-smoothed points,
-      // rejecting very low-confidence joints, and gently damping distal joints
-      // toward the live torso. This preserves natural live movement without the
-      // "dancing" caused by independently stretching the source pose.
-      const torsoIds=[11,12,23,24];
-      const avg=(pts:{x:number;y:number}[])=>pts.reduce((a,p)=>({x:a.x+p.x/pts.length,y:a.y+p.y/pts.length}),{x:0,y:0});
-      const targetTor=avg(torsoIds.map(i=>rawTarget[i]));
-      const liveShoulder=Math.max(1,Math.hypot(rawTarget[11].x-rawTarget[12].x,rawTarget[11].y-rawTarget[12].y));
-      const liveHip=Math.max(1,Math.hypot(rawTarget[23].x-rawTarget[24].x,rawTarget[23].y-rawTarget[24].y));
-      const bodyScale=Math.max(.82,Math.min(1.22,(liveShoulder/Math.max(1,w*.12)+liveHip/Math.max(1,w*.08))/2));
-      const targetPose=rawTarget.map((q:any,i:number)=>{
-        const visibility=lp[i]?.visibility??1;
-        if(visibility<0.35 && sourcePose[i]){
-          // When a joint is briefly occluded, hold it in a torso-relative
-          // position instead of letting one bad frame jerk the whole mesh.
-          const fallback=sourcePose[i];
-          const sourceTor=avg(torsoIds.map(j=>sourcePose[j]));
-          const dx=fallback.x-sourceTor.x,dy=fallback.y-sourceTor.y;
-          return {x:targetTor.x+dx*bodyScale,y:targetTor.y+dy*bodyScale};
-        }
-        // Live coordinates remain dominant. The small center correction only
-        // keeps the full uploaded person balanced around the live torso.
-        const gain=(i===15||i===16||i===27||i===28||i===31||i===32)?0.82:0.92;
-        return {
-          x:targetTor.x+(q.x-targetTor.x)*gain,
-          y:targetTor.y+(q.y-targetTor.y)*gain
-        };
-      });
-
-      // Add image corners so the WHOLE uploaded photograph participates in
-      // the deformation, not just the body hull.
-      const sx=sourcePose.map(q=>q.x), sy=sourcePose.map(q=>q.y);
-      const tx=targetPose.map(q=>q.x), ty=targetPose.map(q=>q.y);
-      const sMinX=Math.min(...sx),sMaxX=Math.max(...sx),sMinY=Math.min(...sy),sMaxY=Math.max(...sy);
-      const tMinX=Math.min(...tx),tMaxX=Math.max(...tx),tMinY=Math.min(...ty),tMaxY=Math.max(...ty);
-      const sw=Math.max(1,sMaxX-sMinX),sh=Math.max(1,sMaxY-sMinY);
-      const tw=Math.max(1,tMaxX-tMinX),th=Math.max(1,tMaxY-tMinY);
-      const cornerSource=[
-        {x:0,y:0},{x:img.naturalWidth,y:0},
-        {x:img.naturalWidth,y:img.naturalHeight},{x:0,y:img.naturalHeight}
-      ];
-      const cornerTarget=[
-        {x:tMinX+(0-sMinX)/sw*tw,y:tMinY+(0-sMinY)/sh*th},
-        {x:tMinX+(img.naturalWidth-sMinX)/sw*tw,y:tMinY+(0-sMinY)/sh*th},
-        {x:tMinX+(img.naturalWidth-sMinX)/sw*tw,y:tMinY+(img.naturalHeight-sMinY)/sh*th},
-        {x:tMinX+(0-sMinX)/sw*tw,y:tMinY+(img.naturalHeight-sMinY)/sh*th}
-      ];
-
-      const srcMesh=sourcePose.concat(cornerSource);
-      const dstMesh=targetPose.concat(cornerTarget);
-      const triangles=triangulate(srcMesh);
-
+      // Only the uploaded face is warped onto the live face. Live head/body
+      // movement and expression remain the motion driver.
       x.save();
       x.globalCompositeOperation="source-over";
-      for(const tri of triangles){
-        const s=tri.flatMap(i=>[srcMesh[i].x,srcMesh[i].y]);
-        const d=tri.flatMap(i=>[dstMesh[i].x,dstMesh[i].y]);
+      for(const tri of faceTriangles){
+        const s=tri.flatMap(i=>[srcFace[i].x,srcFace[i].y]);
+        const d=tri.flatMap(i=>[liveFaceTarget[i].x,liveFaceTarget[i].y]);
         warpTriangle(x,img,s,d,1);
       }
       x.restore();
-
-      // Face landmarks are expression/mouth controls. They deform the
-      // uploaded face itself; the live face is never painted over it.
-      const liveFace=lastLivePoints.current;
-      const srcFace=sourcePoints.current;
-      if(liveFace&&srcFace&&liveFace.length===srcFace.length){
-        const liveFaceTarget=liveFace.map((q:any)=>({
-          x:mirror ? (w-q.x*w) : q.x*w,
-          y:q.y*h
-        }));
-        const faceTriangles=swapTriangles||triangulate(srcFace);
-        x.save();
-        x.globalCompositeOperation="source-over";
-        for(const tri of faceTriangles){
-          const s=tri.flatMap(i=>[srcFace[i].x,srcFace[i].y]);
-          const d=tri.flatMap(i=>[liveFaceTarget[i].x,liveFaceTarget[i].y]);
-          warpTriangle(x,img,s,d,1);
-        }
-        x.restore();
-      }
     }
   }catch(err){
-    console.error("Live uploaded-image deformation failed:",err);
+    console.error("Live face swap failed:",err);
   }
-}else{
+else{
   // Before source analysis is complete, keep the camera visible so the app
   // remains responsive and does not flash a stale/partial source.
   x.save();
@@ -201,8 +127,8 @@ if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&lm&&sourcePosePoints.curr
 
 raf.current=requestAnimationFrame(draw);
 }
-async function analyzeSource(){const img=source.current,l=landmarker.current,pl=poseLandmarker.current;if(!img||!img.complete||!img.naturalWidth||!l||!pl||sourceAnalyzing.current)return false;sourceAnalyzing.current=true;try{setStatus("Analyzing uploaded face…");await l.setOptions({runningMode:"IMAGE"});const max=1024,scale=Math.min(1,max/img.naturalWidth,max/img.naturalHeight),sw=Math.max(1,Math.round(img.naturalWidth*scale)),sh=Math.max(1,Math.round(img.naturalHeight*scale));const probe=document.createElement("canvas");probe.width=sw;probe.height=sh;probe.getContext("2d")!.drawImage(img,0,0,sw,sh);const r=l.detect(probe),p=r.faceLandmarks?.[0];await l.setOptions({runningMode:"VIDEO"});await pl.setOptions({runningMode:"IMAGE"});const body=pl.detect(probe),bp=body.landmarks?.[0];await pl.setOptions({runningMode:"VIDEO"});if(!p){sourcePoints.current=null;sourcePosePoints.current=null;swapTriangles=null;setStatus("No face detected in uploaded image — choose a clear front-facing photo.");return false}if(!bp){sourcePoints.current=null;sourcePosePoints.current=null;swapTriangles=null;setStatus("A full-body source image is required so your live body is fully covered.");return false}sourcePoints.current=SWAP_POINTS.map(i=>({x:p[i].x*img.naturalWidth,y:p[i].y*img.naturalHeight}));sourcePosePoints.current=bp.map((q:any)=>({x:q.x*img.naturalWidth,y:q.y*img.naturalHeight}));swapTriangles=triangulate(sourcePoints.current);setStatus("Full uploaded person applied — face, body and clothing follow your live movement.");return true}catch(e){console.error("Source face analysis failed",e);try{await l.setOptions({runningMode:"VIDEO"})}catch{}try{await pl.setOptions({runningMode:"VIDEO"})}catch{}sourcePoints.current=null;sourcePosePoints.current=null;swapTriangles=null;setStatus("Uploaded image analysis failed — choose a clear front-facing image and retry.");return false}finally{sourceAnalyzing.current=false}}
-function upload(e:React.ChangeEvent<HTMLInputElement>){const f=e.target.files?.[0];if(!f)return;const url=URL.createObjectURL(f);setSourceUrl(url);sourcePoints.current=null;sourcePosePoints.current=null;swapTriangles=null;lastLivePose.current=null;stableLivePose.current=null;if(source.current){source.current.onload=async()=>{const ok=await analyzeSource();if(!ok&&!landmarker.current)setStatus("Source loaded — face tracker is still loading…");};source.current.src=url}setStatus(running?"Analyzing source face…":"Source loaded — start the camera.")}
+async function analyzeSource(){const img=source.current,l=landmarker.current,pl=poseLandmarker.current;if(!img||!img.complete||!img.naturalWidth||!l||!pl||sourceAnalyzing.current)return false;sourceAnalyzing.current=true;try{setStatus("Analyzing uploaded face…");await l.setOptions({runningMode:"IMAGE"});const max=1024,scale=Math.min(1,max/img.naturalWidth,max/img.naturalHeight),sw=Math.max(1,Math.round(img.naturalWidth*scale)),sh=Math.max(1,Math.round(img.naturalHeight*scale));const probe=document.createElement("canvas");probe.width=sw;probe.height=sh;probe.getContext("2d")!.drawImage(img,0,0,sw,sh);const r=l.detect(probe),p=r.faceLandmarks?.[0];await l.setOptions({runningMode:"VIDEO"});await pl.setOptions({runningMode:"IMAGE"});const body=pl.detect(probe),bp=body.landmarks?.[0];await pl.setOptions({runningMode:"VIDEO"});if(!p){sourcePoints.current=null;sourcePosePoints.current=null;swapTriangles=null;setStatus("No face detected in uploaded image — choose a clear front-facing photo.");return false}sourcePoints.current=SWAP_POINTS.map(i=>({x:p[i].x*img.naturalWidth,y:p[i].y*img.naturalHeight}));sourcePosePoints.current=bp?bp.map((q:any)=>({x:q.x*img.naturalWidth,y:q.y*img.naturalHeight})):null;swapTriangles=triangulate(sourcePoints.current);setStatus("Uploaded face applied — live body and movement stay natural.");return true}catch(e){console.error("Source face analysis failed",e);try{await l.setOptions({runningMode:"VIDEO"})}catch{}try{await pl.setOptions({runningMode:"VIDEO"})}catch{}sourcePoints.current=null;sourcePosePoints.current=null;swapTriangles=null;setStatus("Uploaded image analysis failed — choose a clear front-facing image and retry.");return false}finally{sourceAnalyzing.current=false}}
+function upload(e:React.ChangeEvent<HTMLInputElement>){const f=e.target.files?.[0];if(!f)return;const url=URL.createObjectURL(f);setSourceUrl(url);sourcePoints.current=null;sourcePosePoints.current=null;swapTriangles=null;lastLivePose.current=null;stableLivePose.current=null;stableLivePoints.current=null;if(source.current){source.current.onload=async()=>{const ok=await analyzeSource();if(!ok&&!landmarker.current)setStatus("Source loaded — face tracker is still loading…");};source.current.src=url}setStatus(running?"Analyzing source face…":"Source loaded — start the camera.")}
 function openOutput(){if(!output.current||!running){setStatus("Start the camera before opening the output.");return}const w=window.open("","liveface-output","width=960,height=620");if(!w){setStatus("Popup blocked. Allow popups for this site.");return}popup.current=w;w.document.title="LiveFace Camera Output";w.document.body.style.cssText="margin:0;background:#000;overflow:hidden";const v=w.document.createElement("video");v.autoplay=true;v.playsInline=true;v.muted=false;v.volume=1;v.style.cssText="width:100vw;height:100vh;object-fit:contain";v.srcObject=output.current;w.document.body.appendChild(v);(w as OutputWindow).liveFaceOutput=v}
 function copyOutput(){if(output.current){const win=window as LiveFaceWindow;win.liveFaceOutput=output.current;win.liveFaceCallOutput=output.current;navigator.clipboard?.writeText("LiveFace processed call stream is available as window.liveFaceCallOutput").catch(()=>{});setStatus("Processed camera + microphone stream exposed as window.liveFaceCallOutput.")}}
 return <main>
@@ -210,7 +136,7 @@ return <main>
 <section className="hero"><p className="eyebrow">REAL-TIME CAMERA STUDIO</p><h1>One processed stream.<br/><span>Use it wherever you need.</span></h1><p className="sub">The processed canvas is now a real 30 FPS MediaStream output. Open it in a clean window for OBS/virtual-camera workflows, while the swap stays local in the browser.</p></section>
 <section className="workspace"><div className="stage"><video ref={video} playsInline muted hidden/><canvas ref={canvas}/><img ref={source} hidden alt="source"/>{!running&&<div className="empty"><div className="orb">◉</div><strong>Camera preview</strong><span>Start your camera to begin face tracking.</span></div>}<div className={"live "+(running?"on":"")}>● {running?"LIVE · 30 FPS":"OFFLINE"}</div></div>
 <aside><div className="card"><div className="cardtitle">1 · Permission</div><label className="check"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/><span>I have permission to use the selected source face.</span></label></div>
-<div className="card"><div className="cardtitle">2 · Source face</div><label className="upload">{sourceUrl?<img src={sourceUrl} alt="Selected source"/>:<div className="uploadicon">＋</div>}<span>{sourceUrl?"Replace source image":"Choose a full-body source image"}</span><input type="file" accept="image/*" onChange={upload}/></label><small className="hint">Use a clear full-body image you are authorized to use.</small></div>
+<div className="card"><div className="cardtitle">2 · Source face</div><label className="upload">{sourceUrl?<img src={sourceUrl} alt="Selected source"/>:<div className="uploadicon">＋</div>}<span>{sourceUrl?"Replace source image":"Choose a clear face image"}</span><input type="file" accept="image/*" onChange={upload}/></label><small className="hint">Use a clear face image you are authorized to use.</small></div>
 <div className="card"><div className="cardtitle">3 · Camera + voice + output</div><select className="cameraSelect" value={deviceId} disabled={running||devices.length===0} onChange={e=>setDeviceId(e.target.value)}><option value="">{devices.length?"Select camera":"Camera will appear after permission"}</option>{devices.map(d=><option key={d.deviceId} value={d.deviceId}>{d.label||`Camera ${devices.indexOf(d)+1}`}</option>)}</select><div className="voiceRow"><label>Voice style</label><select className="voiceSelect" value={voiceStyle} disabled={!running} onChange={e=>setVoiceStyle(e.target.value as "natural"|"male"|"female")}><option value="natural">Natural</option><option value="male">Male style</option><option value="female">Female style</option></select></div><button className="primary" onClick={running?stop:start}>{running?"Stop call stream":"Start camera + microphone"}</button><div className="outputrow"><button className="secondary" disabled={!outputReady||!running} onClick={openOutput}>Open output window</button><button className="secondary" disabled={!outputReady||!running} onClick={copyOutput}>Expose stream</button></div><div className="row"><span>Mirror preview</span><button className={"switch "+(mirror?"active":"")} onClick={()=>setMirror(!mirror)}><i/></button></div></div>
 <div className="status"><span className={ready?"dot ready":"dot"}/>{status}{running&&!landmarker.current&&<button className="secondary" onClick={loadFaceLandmarker}>Retry face tracking</button>}</div></aside></section>
 <section className="how"><b>Video-call workflow</b><span>LiveFace → processed camera + microphone → desktop bridge → virtual camera + virtual microphone → WhatsApp / Discord / Zoom / Meet.</span></section>
