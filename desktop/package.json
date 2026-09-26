@@ -8,7 +8,8 @@
     "stop": "node obs-bridge.mjs stop",
     "call-status": "node obs-bridge.mjs call-status",
     "call-start": "node obs-bridge.mjs call-start",
-    "call-stop": "node obs-bridge.mjs call-stop"
+    "call-stop": "node obs-bridge.mjs call-stop",
+    "call-route": "node obs-bridge.mjs call-route"
   },
   "dependencies": {
     "obs-websocket-js": "^5.0.7"
