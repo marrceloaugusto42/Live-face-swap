@@ -1,1 +1,16 @@
-{"name":"liveface-obs-bridge","private":true,"type":"module","scripts":{"start":"node obs-bridge.mjs","virtual-camera":"node obs-bridge.mjs start","stop":"node obs-bridge.mjs stop"},"dependencies":{"obs-websocket-js":"^5.0.7"}}
+{
+  "name": "liveface-obs-bridge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node obs-bridge.mjs",
+    "virtual-camera": "node obs-bridge.mjs start",
+    "stop": "node obs-bridge.mjs stop",
+    "call-status": "node obs-bridge.mjs call-status",
+    "call-start": "node obs-bridge.mjs call-start",
+    "call-stop": "node obs-bridge.mjs call-stop"
+  },
+  "dependencies": {
+    "obs-websocket-js": "^5.0.7"
+  }
+}
