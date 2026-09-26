@@ -64,14 +64,14 @@ export default function App(){
    setStatus("Loading face tracking engine…");
    const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm");
    setStatus("Loading face landmark model…");
-   const create=()=>FaceLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:MODEL,delegate:"CPU"},runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.55,minFacePresenceConfidence:.55,minTrackingConfidence:.55});
+   const create=()=>FaceLandmarker.createFromModelPath(vision,MODEL).then(async lm=>{await lm.setOptions({runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.55,minFacePresenceConfidence:.55,minTrackingConfidence:.55});return lm;});
    landmarker.current=await Promise.race([create(),new Promise<never>((_,reject)=>setTimeout(()=>reject(new Error("Face model load timed out")),20000))]);
    setStatus(sourceUrl?"Live output active — face swap ready.":"Live camera active — add a source face for the swap.");
    return true;
   }catch(e){
    console.error("Face tracking initialization failed:",e);
    landmarker.current=null;
-   setStatus("Live camera is working. Face tracking could not load; retrying is available. Check network access to MediaPipe.");
+   setStatus("Live camera is working. Face tracking is not loaded. Use Retry face tracking.");
    return false;
   }
  }
@@ -96,10 +96,10 @@ export default function App(){
  }
  function stop(){cancelAnimationFrame(raf.current);stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;audioContext.current?.close().catch(()=>{});audioContext.current=null;audioSource.current=null;audioDestination.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;const win=window as LiveFaceWindow;delete win.liveFaceAudioOutput;delete win.liveFaceCallOutput;delete win.liveFaceOutput;setOutputReady(false);setRunning(false);setReady(false);setStatus("Camera is off")}
  function draw(){
-  const v=video.current,c=canvas.current,l=landmarker.current,img=source.current;if(!v||!c||!l)return;
+  const v=video.current,c=canvas.current,l=landmarker.current,img=source.current;if(!v||!c){raf.current=requestAnimationFrame(draw);return;}
   const w=v.videoWidth||1280,h=v.videoHeight||720;if(c.width!==w||c.height!==h){c.width=w;c.height=h}
   const x=c.getContext("2d")!;x.clearRect(0,0,w,h);x.save();if(mirror){x.translate(w,0);x.scale(-1,1)}x.drawImage(v,0,0,w,h);x.restore();
-  if(img&&sourceUrl&&img.complete&&sourcePoints.current&&swapTriangles){const res=l.detectForVideo(v,performance.now()),p=res.faceLandmarks?.[0];if(p){const target=SWAP_POINTS.map(i=>({x:p[i].x*w,y:p[i].y*h}));x.save();for(const t of swapTriangles){const s=t.flatMap(i=>[sourcePoints.current![i].x,sourcePoints.current![i].y]);const d=t.flatMap(i=>{const q=target[i];return[mirror?w-q.x:q.x,q.y]});warpTriangle(x,img,s,d,.96)}x.restore()}}
+  if(img&&sourceUrl&&img.complete&&sourcePoints.current&&swapTriangles&&l){const res=l.detectForVideo(v,performance.now()),p=res.faceLandmarks?.[0];if(p){const target=SWAP_POINTS.map(i=>({x:p[i].x*w,y:p[i].y*h}));x.save();for(const t of swapTriangles){const s=t.flatMap(i=>[sourcePoints.current![i].x,sourcePoints.current![i].y]);const d=t.flatMap(i=>{const q=target[i];return[mirror?w-q.x:q.x,q.y]});warpTriangle(x,img,s,d,.96)}x.restore()}}
   raf.current=requestAnimationFrame(draw);
  }
  function upload(e:React.ChangeEvent<HTMLInputElement>){const f=e.target.files?.[0];if(!f)return;const url=URL.createObjectURL(f);setSourceUrl(url);sourcePoints.current=null;swapTriangles=null;if(source.current){source.current.onload=()=>{if(landmarker.current&&source.current){const r=landmarker.current.detect(source.current),p=r.faceLandmarks?.[0];if(p){sourcePoints.current=SWAP_POINTS.map(i=>({x:p[i].x*source.current!.naturalWidth,y:p[i].y*source.current!.naturalHeight}));swapTriangles=triangulate(sourcePoints.current);setStatus("Source face mapped — live swap ready")}else setStatus("No face detected in source image.")}};source.current.src=url}setStatus(running?"Analyzing source face…":"Source loaded — start the camera.")}
@@ -114,7 +114,7 @@ export default function App(){
     <div className="card"><div className="cardtitle">1 · Permission</div><label className="check"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/><span>I have permission to use the selected source face.</span></label></div>
     <div className="card"><div className="cardtitle">2 · Source face</div><label className="upload">{sourceUrl?<img src={sourceUrl} alt="Selected source"/>:<div className="uploadicon">＋</div>}<span>{sourceUrl?"Replace source image":"Choose a face image"}</span><input type="file" accept="image/*" onChange={upload}/></label><small className="hint">Use a clear, front-facing image you are authorized to use.</small></div>
     <div className="card"><div className="cardtitle">3 · Camera + voice + output</div><select className="cameraSelect" value={deviceId} disabled={running||devices.length===0} onChange={e=>setDeviceId(e.target.value)}><option value="">{devices.length?"Select camera":"Camera will appear after permission"}</option>{devices.map(d=><option key={d.deviceId} value={d.deviceId}>{d.label||`Camera ${devices.indexOf(d)+1}`}</option>)}</select><div className="voiceRow"><label>Voice style</label><select className="voiceSelect" value={voiceStyle} disabled={!running} onChange={e=>setVoiceStyle(e.target.value as "natural"|"male"|"female")}><option value="natural">Natural</option><option value="male">Male style</option><option value="female">Female style</option></select></div><button className="primary" onClick={running?stop:start}>{running?"Stop call stream":"Start camera + microphone"}</button><div className="outputrow"><button className="secondary" disabled={!outputReady||!running} onClick={openOutput}>Open output window</button><button className="secondary" disabled={!outputReady||!running} onClick={copyOutput}>Expose stream</button></div><div className="row"><span>Mirror preview</span><button className={"switch "+(mirror?"active":"")} onClick={()=>setMirror(!mirror)}><i/></button></div></div>
-    <div className="status"><span className={ready?"dot ready":"dot"}/>{status}</div>
+    <div className="status"><span className={ready?"dot ready":"dot"}/>{status}{running&&!landmarker.current&&<button className="secondary" onClick={loadFaceLandmarker}>Retry face tracking</button>}</div>
    </aside>
   </section>
   <section className="how"><b>Video-call workflow</b><span>LiveFace → processed camera + microphone → desktop bridge → virtual camera + virtual microphone → WhatsApp / Discord / Zoom / Meet.</span></section>
