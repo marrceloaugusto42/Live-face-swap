@@ -85,7 +85,7 @@ if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&lm&&sourcePosePoints.curr
           return {
             x:p.x+(q.x-p.x)*alpha,
             y:p.y+(q.y-p.y)*alpha,
-            z:(p.z??0)+(q.z??0-(p.z??0))*alpha,
+            z:(p.z??0)+((q.z??0)-(p.z??0))*alpha,
             visibility:q.visibility
           };
         });
@@ -114,11 +114,21 @@ if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&lm&&sourcePosePoints.curr
       const sShoulder=Math.max(1,sc(sourcePose,11,12)), sHip=Math.max(1,sc(sourcePose,23,24));
       const tShoulder=Math.max(1,sc(rawTarget,11,12)), tHip=Math.max(1,sc(rawTarget,23,24));
       const sourceTor=avg(sourceTorso), targetTor=avg(targetTorso);
-      const bodyScale=Math.max(.55,Math.min(1.65,(tShoulder/sShoulder+tHip/sHip)/2));
+      const bodyScale=Math.max(.75,Math.min(1.35,(tShoulder/sShoulder+tHip/sHip)/2));
       const targetPose=sourcePose.map((sp,i)=>{
-        const dx=(rawTarget[i].x-targetTor.x)/bodyScale;
-        const dy=(rawTarget[i].y-targetTor.y)/bodyScale;
-        return {x:targetTor.x+dx*bodyScale,y:targetTor.y+dy*bodyScale};
+        const dx=sp.x-sourceTor.x;
+        const dy=sp.y-sourceTor.y;
+        const sourceLen=Math.max(1,Math.hypot(dx,dy));
+        const liveDx=rawTarget[i].x-targetTor.x;
+        const liveDy=rawTarget[i].y-targetTor.y;
+        const liveLen=Math.hypot(liveDx,liveDy);
+        const maxStretch=sourceLen*bodyScale*1.55;
+        const safeLen=Math.min(liveLen,maxStretch);
+        const ratio=liveLen>1?safeLen/liveLen:1;
+        return {
+          x:targetTor.x+liveDx*ratio,
+          y:targetTor.y+liveDy*ratio
+        };
       });
 
       // Add image corners so the WHOLE uploaded photograph participates in
