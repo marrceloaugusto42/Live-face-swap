@@ -63,16 +63,26 @@ export default function App(){
   try{
    setStatus("Loading face tracking engine…");
    const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm");
-   setStatus("Loading face landmark model…");
-   const create=()=>FaceLandmarker.createFromModelPath(vision,MODEL).then(async lm=>{await lm.setOptions({runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.5,minFacePresenceConfidence:.5,minTrackingConfidence:.5});return lm;});
-   landmarker.current=await Promise.race([create(),new Promise<never>((_,reject)=>setTimeout(()=>reject(new Error("Face model load timed out")),20000))]);
+   setStatus("Downloading face model…");
+   const controller=new AbortController();
+   const timer=window.setTimeout(()=>controller.abort(),20000);
+   let response:Response;
+   try{response=await fetch(MODEL,{mode:"cors",cache:"force-cache",signal:controller.signal});}
+   finally{window.clearTimeout(timer);}
+   if(!response.ok)throw new Error("Face model download failed (HTTP "+response.status+")");
+   const bytes=await response.arrayBuffer();
+   if(bytes.byteLength<100000)throw new Error("Face model download was incomplete");
+   setStatus("Starting face tracking…");
+   const lm=await FaceLandmarker.createFromModelBuffer(vision,bytes);
+   await lm.setOptions({runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.5,minFacePresenceConfidence:.5,minTrackingConfidence:.5});
+   landmarker.current=lm;
    if(source.current?.complete&&sourceUrl)analyzeSource();else setStatus(sourceUrl?"Face tracking ready — analyzing source image…":"Live camera active — add a source face for the swap.");
    return true;
   }catch(e){
    console.error("Face tracking initialization failed:",e);
    landmarker.current=null;
-   const detail=e instanceof Error?e.message:String(e);
-   setStatus("Face tracking failed: "+detail+" — camera is still live. Retry face tracking.");
+   const detail=e instanceof Error?e.message:(e instanceof DOMException?e.name+": "+e.message:"Unknown face-model error");
+   setStatus("Face tracking failed: "+detail+". Camera is still live; retry face tracking.");
    return false;
   }
  }
