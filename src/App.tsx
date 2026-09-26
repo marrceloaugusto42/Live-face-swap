@@ -131,34 +131,37 @@ if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&sourcePosePoints.current&
       // actual pixels from the uploaded person, so clothing, hair, skin and
       // body appearance move with the live pose instead of using the live body.
       const meshTriangles=triangulate(srcPx);
-      x.save();
-      x.globalCompositeOperation="source-over";
+      // Render the uploaded person into an isolated layer first. This is
+      // important: clipping must never erase the live camera background.
+      const personLayer=document.createElement("canvas");
+      personLayer.width=w;
+      personLayer.height=h;
+      const px=personLayer.getContext("2d")!;
       for(const tri of meshTriangles){
         const src=tri.flatMap(i=>[srcPx[i].x,srcPx[i].y]);
-        const dst=tri.flatMap(i=>[
-          dstAnchor.x*w+(targetMesh[i].x-liveCx*w),
-          dstAnchor.y*h+(targetMesh[i].y-liveCy*h)
-        ]);
-        warpTriangle(x,img,src,dst,1);
+        const dst=tri.flatMap(i=>[targetMesh[i].x,targetMesh[i].y]);
+        warpTriangle(px,img,src,dst,1);
       }
-      x.restore();
 
-      // Hide most of the uploaded photo background by clipping the final
-      // person to a pose-derived silhouette. This keeps the live camera
-      // background visible rather than bringing the source photo background.
+      // Keep the source person's pixels inside the live person's pose hull
+      // while leaving the live environment untouched.
       const hull=convexHull(targetMesh.map((p:any)=>({x:p.x,y:p.y})));
       if(hull.length>=3){
-        x.save();
-        x.globalCompositeOperation="destination-in";
-        x.beginPath();
+        px.save();
+        px.globalCompositeOperation="destination-in";
+        px.beginPath();
         hull.forEach((i:number,j:number)=>{
           const p=targetMesh[i];
-          if(j===0)x.moveTo(p.x,p.y);else x.lineTo(p.x,p.y);
+          if(j===0)px.moveTo(p.x,p.y);else px.lineTo(p.x,p.y);
         });
-        x.closePath();
-        x.fill();
-        x.restore();
+        px.closePath();
+        px.fill();
+        px.restore();
       }
+      x.save();
+      x.globalCompositeOperation="source-over";
+      x.drawImage(personLayer,0,0);
+      x.restore();
     }else if(sourcePosePoints.current){
       setStatus("Stand fully in frame so the live body can drive the uploaded person.");
     }
