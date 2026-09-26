@@ -54,7 +54,7 @@ return false;
 async function start(){if(!consent){setStatus("Confirm that you have permission to use the source face.");return}try{setStatus("Requesting camera and microphone…");stream.current=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:"user",...(deviceId?{deviceId:{exact:deviceId}}:{})},audio:true});await refreshDevices();if(video.current){video.current.srcObject=stream.current;await video.current.play()}setRunning(true);setReady(true);setStatus("Live camera active — loading face tracking…");const c=canvas.current;if(c&&"captureStream" in c){await setupAudioProcessing();const base=c.captureStream(30);if(!output.current)output.current=base;const win=window as LiveFaceWindow;win.liveFaceOutput=output.current;win.liveFaceCallOutput=output.current;setOutputReady(true)}draw();await loadFaceLandmarker()}catch(e){console.error("LiveFace camera startup error:",e);const detail=e instanceof DOMException?e.name+(e.message?": "+e.message:""):e instanceof Error?e.name+": "+e.message:typeof e==="object"&&e!==null?String(e):String(e);setStatus("Camera error: "+(detail||"Unknown error")+". Check browser camera/microphone permission.");stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;audioContext.current?.close().catch(()=>{});audioContext.current=null;audioSource.current=null;audioDestination.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;setOutputReady(false);setRunning(false);setReady(false)}}
 function stop(){cancelAnimationFrame(raf.current);stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;audioContext.current?.close().catch(()=>{});audioContext.current=null;audioSource.current=null;audioDestination.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;const win=window as LiveFaceWindow;delete win.liveFaceAudioOutput;delete win.liveFaceCallOutput;delete win.liveFaceOutput;setOutputReady(false);setRunning(false);setReady(false);setStatus("Camera is off")}
 function draw(){
-const v=video.current,c=canvas.current,l=landmarker.current,pl=poseLandmarker.current,img=source.current;
+const v=video.current,c=canvas.current,pl=poseLandmarker.current,img=source.current;
 if(!v||!c){raf.current=requestAnimationFrame(draw);return}
 const w=v.videoWidth||1280,h=v.videoHeight||720;
 if(c.width!==w||c.height!==h){c.width=w;c.height=h}
@@ -65,115 +65,44 @@ if(mirror){x.translate(w,0);x.scale(-1,1)}
 x.drawImage(v,0,0,w,h);
 x.restore();
 
-if(img&&sourceUrl&&img.complete&&img.naturalWidth&&l&&sourcePoints.current&&swapTriangles&&!sourceAnalyzing.current){
+if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&sourcePosePoints.current&&!sourceAnalyzing.current){
   try{
-    const now=performance.now();
-    let p:any=lastLivePoints.current;
-
-    if(v.currentTime!==lastVideoTime.current&&now-lastDetectAt.current>=50){
-      const res=l.detectForVideo(v,now);
-      const fp=res.faceLandmarks?.[0];
-      p=fp||lastLivePoints.current;
-      lastLivePoints.current=p;
-      lastVideoTime.current=v.currentTime;
-      lastDetectAt.current=now;
+    const poseNow=performance.now();
+    if(poseNow-lastPoseAt.current>=100){
+      const pr=pl.detectForVideo(v,poseNow);
+      const lp=pr.landmarks?.[0];
+      if(lp){
+        lastLivePose.current=lp;
+        lastPoseAt.current=poseNow;
+      }
     }
 
-    if(p){
-      const target=SWAP_POINTS.map(i=>({x:p[i].x*w,y:p[i].y*h}));
-      const mapped=target.map(q=>({x:mirror ? (w - q.x) : q.x,y:q.y}));
-      const boundary=[10,54,109,127,143,152,172,176,234,454,400,397,389,377,366,356,338,297,284,263,33];
+    const lp=lastLivePose.current;
+    if(lp){
+      const sourcePose=sourcePosePoints.current;
+      const targetPose=lp.map((q:any)=>({x:q.x*w,y:q.y*h})).map(q=>({x:mirror ? (w-q.x) : q.x,y:q.y}));
+      const sx=sourcePose.map(q=>q.x),sy=sourcePose.map(q=>q.y);
+      const tx=targetPose.map(q=>q.x),ty=targetPose.map(q=>q.y);
+      const sMinX=Math.min(...sx),sMaxX=Math.max(...sx),sMinY=Math.min(...sy),sMaxY=Math.max(...sy);
+      const tMinX=Math.min(...tx),tMaxX=Math.max(...tx),tMinY=Math.min(...ty),tMaxY=Math.max(...ty);
+      const sw=Math.max(1,sMaxX-sMinX),sh=Math.max(1,sMaxY-sMinY);
+      const tw=Math.max(1,tMaxX-tMinX),th=Math.max(1,tMaxY-tMinY);
+
+      // Keep the uploaded image completely intact: fit the ENTIRE image inside
+      // the live pose area instead of cropping it or drawing a second live face.
+      const scale=Math.min(tw/img.naturalWidth,th/img.naturalHeight);
+      const dw=img.naturalWidth*scale;
+      const dh=img.naturalHeight*scale;
+      const dx=tMinX+(tw-dw)/2;
+      const dy=tMinY+(th-dh)/2;
 
       x.save();
       x.globalCompositeOperation="source-over";
-      x.beginPath();
-      boundary.forEach((idx,j)=>{
-        const k=SWAP_POINTS.indexOf(idx);
-        if(k<0)return;
-        const q=mapped[k];
-        if(j)x.lineTo(q.x,q.y);else x.moveTo(q.x,q.y);
-      });
-      x.closePath();
-      x.clip();
-
-      for(const t of swapTriangles!){
-        const ss=t.flatMap(i=>[sourcePoints.current![i].x,sourcePoints.current![i].y]);
-        const dd=t.flatMap(i=>{
-          const q=target[i];
-          return[mirror ? (w - q.x) : q.x,q.y];
-        });
-        warpTriangle(x,img,ss,dd,.98);
-      }
+      x.drawImage(img,dx,dy,dw,dh);
       x.restore();
     }
-
-    if(pl&&sourcePosePoints.current){
-      const poseNow=performance.now();
-
-      if(poseNow-lastPoseAt.current>=100){
-        try{
-          const pr=pl.detectForVideo(v,poseNow);
-          const lp=pr.landmarks?.[0];
-          if(lp){
-            lastLivePose.current=lp;
-            lastPoseAt.current=poseNow;
-          }
-        }catch(e){
-          console.error("Body tracking failed",e);
-        }
-      }
-
-      const lp=lastLivePose.current;
-      if(lp){
-        const sourcePose=sourcePosePoints.current;
-        const targetPose=lp.map((q:any)=>({x:q.x*w,y:q.y*h})).map(q=>({x:mirror ? (w - q.x) : q.x,y:q.y}));
-        const sx=sourcePose.map(q=>q.x),sy=sourcePose.map(q=>q.y);
-        const tx=targetPose.map(q=>q.x),ty=targetPose.map(q=>q.y);
-
-        const sMinX=Math.min(...sx),sMaxX=Math.max(...sx),sMinY=Math.min(...sy),sMaxY=Math.max(...sy);
-        const tMinX=Math.min(...tx),tMaxX=Math.max(...tx),tMinY=Math.min(...ty),tMaxY=Math.max(...ty);
-        const sw=Math.max(1,sMaxX-sMinX),sh=Math.max(1,sMaxY-sMinY);
-        const tw=Math.max(1,tMaxX-tMinX),th=Math.max(1,tMaxY-tMinY);
-        const scale=Math.max(tw/sw,th/sh);
-        const dw=img.naturalWidth*scale,dh=img.naturalHeight*scale;
-        const dx=tMinX+(tw-dw)/2,dy=tMinY+(th-dh)/2;
-
-        x.save();
-        x.globalCompositeOperation="source-over";
-        x.drawImage(img,dx,dy,dw,dh);
-        x.restore();
-
-        if(p){
-          const target=SWAP_POINTS.map(i=>({x:p[i].x*w,y:p[i].y*h}));
-          const mapped=target.map(q=>({x:mirror ? (w - q.x) : q.x,y:q.y}));
-          const boundary=[10,54,109,127,143,152,172,176,234,454,400,397,389,377,366,356,338,297,284,263,33];
-
-          x.save();
-          x.globalCompositeOperation="source-over";
-          x.beginPath();
-          boundary.forEach((idx,j)=>{
-            const k=SWAP_POINTS.indexOf(idx);
-            if(k<0)return;
-            const q=mapped[k];
-            if(j)x.lineTo(q.x,q.y);else x.moveTo(q.x,q.y);
-          });
-          x.closePath();
-          x.clip();
-
-          for(const t of swapTriangles!){
-            const ss=t.flatMap(i=>[sourcePoints.current![i].x,sourcePoints.current![i].y]);
-            const dd=t.flatMap(i=>{
-              const q=target[i];
-              return[mirror ? (w - q.x) : q.x,q.y];
-            });
-            warpTriangle(x,img,ss,dd,.98);
-          }
-          x.restore();
-        }
-      }
-    }
   }catch(err){
-    console.error("Live face/body render failed:",err);
+    console.error("Live uploaded-image render failed:",err);
   }
 }
 
