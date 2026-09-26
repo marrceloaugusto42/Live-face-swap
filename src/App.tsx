@@ -17,7 +17,7 @@ function warpTriangle(ctx:CanvasRenderingContext2D,img:HTMLImageElement,s:number
 export default function App(){
 const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null),source=useRef<HTMLImageElement>(null);
 const stream=useRef<MediaStream|null>(null),output=useRef<MediaStream|null>(null),landmarker=useRef<FaceLandmarker|null>(null),poseLandmarker=useRef<PoseLandmarker|null>(null),raf=useRef<number>(0),popup=useRef<Window|null>(null),sourcePoints=useRef<{x:number;y:number}[]|null>(null),sourcePosePoints=useRef<{x:number;y:number}[]|null>(null);
-const audioContext=useRef<AudioContext|null>(null),audioSource=useRef<MediaStreamAudioSourceNode|null>(null),audioDestination=useRef<MediaStreamAudioDestinationNode|null>(null),lastVideoTime=useRef(-1),lastDetectAt=useRef(0),lastPoseAt=useRef(0),lastLivePoints=useRef<any[]|null>(null),lastLivePose=useRef<any[]|null>(null),sourceAnalyzing=useRef(false);
+const audioContext=useRef<AudioContext|null>(null),audioSource=useRef<MediaStreamAudioSourceNode|null>(null),audioDestination=useRef<MediaStreamAudioDestinationNode|null>(null),lastVideoTime=useRef(-1),lastDetectAt=useRef(0),lastPoseAt=useRef(0),lastLivePoints=useRef<any[]|null>(null),lastLivePose=useRef<any[]|null>(null),stableLivePose=useRef<{x:number;y:number;z?:number;visibility?:number}[]|null>(null),sourceAnalyzing=useRef(false);
 const [running,setRunning]=useState(false),[sourceUrl,setSourceUrl]=useState(""),[status,setStatus]=useState("Camera is off");
 const [mirror,setMirror]=useState(true),[consent,setConsent]=useState(false),[ready,setReady]=useState(false),[outputReady,setOutputReady]=useState(false);
 const [devices,setDevices]=useState<MediaDeviceInfo[]>([]),[deviceId,setDeviceId]=useState("");
@@ -77,18 +77,49 @@ if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&lm&&sourcePosePoints.curr
       const lp=pr.landmarks?.[0];
       if(lp){
         lastLivePose.current=lp;
+        const prev=stableLivePose.current;
+        const alpha=.16;
+        stableLivePose.current=lp.map((q:any,i:number)=>{
+          const p=prev?.[i];
+          if(!p)return {x:q.x,y:q.y,z:q.z,visibility:q.visibility};
+          return {
+            x:p.x+(q.x-p.x)*alpha,
+            y:p.y+(q.y-p.y)*alpha,
+            z:(p.z??0)+(q.z??0-(p.z??0))*alpha,
+            visibility:q.visibility
+          };
+        });
         lastPoseAt.current=now;
       }
     }
 
-    const lp=lastLivePose.current;
+    const lp=stableLivePose.current;
     const sourcePose=sourcePosePoints.current;
     if(lp&&sourcePose&&sourcePose.length===lp.length){
       // Mirror the live control points exactly as the preview does.
-      const targetPose=lp.map((q:any)=>({
+      const rawTarget=lp.map((q:any)=>({
         x:mirror ? (w-q.x*w) : q.x*w,
         y:q.y*h
       }));
+
+      // Stabilize the whole person around the torso. The torso determines
+      // translation and overall scale; individual joints only add controlled
+      // movement. This prevents noisy wrist/ankle detections from making the
+      // uploaded person wobble or "dance".
+      const torsoIds=[11,12,23,24];
+      const sourceTorso=torsoIds.map(i=>sourcePose[i]);
+      const targetTorso=torsoIds.map(i=>rawTarget[i]);
+      const avg=(pts:{x:number;y:number}[])=>pts.reduce((a,p)=>({x:a.x+p.x/pts.length,y:a.y+p.y/pts.length}),{x:0,y:0});
+      const sc=(a:{x:number;y:number}[],i:number,j:number)=>Math.hypot(a[i].x-a[j].x,a[i].y-a[j].y);
+      const sShoulder=Math.max(1,sc(sourcePose,11,12)), sHip=Math.max(1,sc(sourcePose,23,24));
+      const tShoulder=Math.max(1,sc(rawTarget,11,12)), tHip=Math.max(1,sc(rawTarget,23,24));
+      const sourceTor=avg(sourceTorso), targetTor=avg(targetTorso);
+      const bodyScale=Math.max(.55,Math.min(1.65,(tShoulder/sShoulder+tHip/sHip)/2));
+      const targetPose=sourcePose.map((sp,i)=>{
+        const dx=(rawTarget[i].x-targetTor.x)/bodyScale;
+        const dy=(rawTarget[i].y-targetTor.y)/bodyScale;
+        return {x:targetTor.x+dx*bodyScale,y:targetTor.y+dy*bodyScale};
+      });
 
       // Add image corners so the WHOLE uploaded photograph participates in
       // the deformation, not just the body hull.
@@ -157,7 +188,7 @@ if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&lm&&sourcePosePoints.curr
 raf.current=requestAnimationFrame(draw);
 }
 async function analyzeSource(){const img=source.current,l=landmarker.current,pl=poseLandmarker.current;if(!img||!img.complete||!img.naturalWidth||!l||!pl||sourceAnalyzing.current)return false;sourceAnalyzing.current=true;try{setStatus("Analyzing uploaded face…");await l.setOptions({runningMode:"IMAGE"});const max=1024,scale=Math.min(1,max/img.naturalWidth,max/img.naturalHeight),sw=Math.max(1,Math.round(img.naturalWidth*scale)),sh=Math.max(1,Math.round(img.naturalHeight*scale));const probe=document.createElement("canvas");probe.width=sw;probe.height=sh;probe.getContext("2d")!.drawImage(img,0,0,sw,sh);const r=l.detect(probe),p=r.faceLandmarks?.[0];await l.setOptions({runningMode:"VIDEO"});await pl.setOptions({runningMode:"IMAGE"});const body=pl.detect(probe),bp=body.landmarks?.[0];await pl.setOptions({runningMode:"VIDEO"});if(!p){sourcePoints.current=null;sourcePosePoints.current=null;swapTriangles=null;setStatus("No face detected in uploaded image — choose a clear front-facing photo.");return false}if(!bp){sourcePoints.current=null;sourcePosePoints.current=null;swapTriangles=null;setStatus("A full-body source image is required so your live body is fully covered.");return false}sourcePoints.current=SWAP_POINTS.map(i=>({x:p[i].x*img.naturalWidth,y:p[i].y*img.naturalHeight}));sourcePosePoints.current=bp.map((q:any)=>({x:q.x*img.naturalWidth,y:q.y*img.naturalHeight}));swapTriangles=triangulate(sourcePoints.current);setStatus("Full uploaded person applied — face, body and clothing follow your live movement.");return true}catch(e){console.error("Source face analysis failed",e);try{await l.setOptions({runningMode:"VIDEO"})}catch{}try{await pl.setOptions({runningMode:"VIDEO"})}catch{}sourcePoints.current=null;sourcePosePoints.current=null;swapTriangles=null;setStatus("Uploaded image analysis failed — choose a clear front-facing image and retry.");return false}finally{sourceAnalyzing.current=false}}
-function upload(e:React.ChangeEvent<HTMLInputElement>){const f=e.target.files?.[0];if(!f)return;const url=URL.createObjectURL(f);setSourceUrl(url);sourcePoints.current=null;sourcePosePoints.current=null;swapTriangles=null;lastLivePose.current=null;if(source.current){source.current.onload=async()=>{const ok=await analyzeSource();if(!ok&&!landmarker.current)setStatus("Source loaded — face tracker is still loading…");};source.current.src=url}setStatus(running?"Analyzing source face…":"Source loaded — start the camera.")}
+function upload(e:React.ChangeEvent<HTMLInputElement>){const f=e.target.files?.[0];if(!f)return;const url=URL.createObjectURL(f);setSourceUrl(url);sourcePoints.current=null;sourcePosePoints.current=null;swapTriangles=null;lastLivePose.current=null;stableLivePose.current=null;if(source.current){source.current.onload=async()=>{const ok=await analyzeSource();if(!ok&&!landmarker.current)setStatus("Source loaded — face tracker is still loading…");};source.current.src=url}setStatus(running?"Analyzing source face…":"Source loaded — start the camera.")}
 function openOutput(){if(!output.current||!running){setStatus("Start the camera before opening the output.");return}const w=window.open("","liveface-output","width=960,height=620");if(!w){setStatus("Popup blocked. Allow popups for this site.");return}popup.current=w;w.document.title="LiveFace Camera Output";w.document.body.style.cssText="margin:0;background:#000;overflow:hidden";const v=w.document.createElement("video");v.autoplay=true;v.playsInline=true;v.muted=false;v.volume=1;v.style.cssText="width:100vw;height:100vh;object-fit:contain";v.srcObject=output.current;w.document.body.appendChild(v);(w as OutputWindow).liveFaceOutput=v}
 function copyOutput(){if(output.current){const win=window as LiveFaceWindow;win.liveFaceOutput=output.current;win.liveFaceCallOutput=output.current;navigator.clipboard?.writeText("LiveFace processed call stream is available as window.liveFaceCallOutput").catch(()=>{});setStatus("Processed camera + microphone stream exposed as window.liveFaceCallOutput.")}}
 return <main>
