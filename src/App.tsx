@@ -59,25 +59,38 @@ export default function App(){
  async function refreshDevices(){
   try{const all=await navigator.mediaDevices.enumerateDevices();const cams=all.filter(d=>d.kind==="videoinput");setDevices(cams);if(!deviceId&&cams[0])setDeviceId(cams[0].deviceId)}catch(e){console.warn("Could not enumerate cameras",e)}
  }
+ async function loadFaceLandmarker(){
+  try{
+   setStatus("Loading face tracking engine…");
+   const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm");
+   setStatus("Loading face landmark model…");
+   const create=()=>FaceLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:MODEL,delegate:"CPU"},runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.55,minFacePresenceConfidence:.55,minTrackingConfidence:.55});
+   landmarker.current=await Promise.race([create(),new Promise<never>((_,reject)=>setTimeout(()=>reject(new Error("Face model load timed out")),20000))]);
+   setStatus(sourceUrl?"Live output active — face swap ready.":"Live camera active — add a source face for the swap.");
+   return true;
+  }catch(e){
+   console.error("Face tracking initialization failed:",e);
+   landmarker.current=null;
+   setStatus("Live camera is working. Face tracking could not load; retrying is available. Check network access to MediaPipe.");
+   return false;
+  }
+ }
  async function start(){
   if(!consent){setStatus("Confirm that you have permission to use the source face.");return}
-  let stage="camera permission";
   try{
-   setStatus("Requesting camera…");
+   setStatus("Requesting camera and microphone…");
    stream.current=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:"user",...(deviceId?{deviceId:{exact:deviceId}}:{})},audio:true});
    await refreshDevices();
    if(video.current){video.current.srcObject=stream.current;await video.current.play()}
-   stage="MediaPipe WASM";setStatus("Loading face tracking engine…");
-   const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm");
-   stage="face landmark model";setStatus("Loading face landmark model…");
-   try{landmarker.current=await FaceLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:MODEL,delegate:"CPU"},runningMode:"IMAGE",numFaces:1,minFaceDetectionConfidence:.55,minFacePresenceConfidence:.55,minTrackingConfidence:.55});await landmarker.current.setOptions({runningMode:"VIDEO"});}catch(primary){console.warn("MediaPipe model-path initialization failed; retrying from model buffer.",primary);const response=await fetch(MODEL,{mode:"cors",cache:"no-store"});if(!response.ok)throw new Error("Face model download failed: HTTP "+response.status);const buffer=await response.arrayBuffer();landmarker.current=await FaceLandmarker.createFromOptions(vision,{baseOptions:{modelAssetBuffer:new Uint8Array(buffer),delegate:"CPU"},runningMode:"IMAGE",numFaces:1,minFaceDetectionConfidence:.55,minFacePresenceConfidence:.55,minTrackingConfidence:.55});await landmarker.current.setOptions({runningMode:"VIDEO"});}
+   setRunning(true);setReady(true);setStatus("Live camera active — loading face tracking…");
    const c=canvas.current;
    if(c&&"captureStream" in c){await setupAudioProcessing();const base=c.captureStream(30);if(!output.current)output.current=base;const win=window as LiveFaceWindow;win.liveFaceOutput=output.current;win.liveFaceCallOutput=output.current;setOutputReady(true)}
-   setRunning(true);setReady(true);setStatus(sourceUrl?"Live output active":"Live camera active — add a source face for the swap.");draw();
+   draw();
+   await loadFaceLandmarker();
   }catch(e){
-   console.error("LiveFace startup error:",{stage,error:e});
-   const detail=e instanceof DOMException?e.name+(e.message?": "+e.message:""):e instanceof Error?e.name+": "+e.message:e instanceof Event?(e.type||"resource")+" event":typeof e==="object"&&e!==null?String(e):String(e);
-   setStatus("Camera/model error ["+stage+"]: "+(detail||"Unknown error")+". MediaPipe could not initialize. Check the model download/network or browser permissions.");
+   console.error("LiveFace camera startup error:",e);
+   const detail=e instanceof DOMException?e.name+(e.message?": "+e.message:""):e instanceof Error?e.name+": "+e.message:typeof e==="object"&&e!==null?String(e):String(e);
+   setStatus("Camera error: "+(detail||"Unknown error")+". Check browser camera/microphone permission.");
    stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;audioContext.current?.close().catch(()=>{});audioContext.current=null;audioSource.current=null;audioDestination.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;setOutputReady(false);setRunning(false);setReady(false);
   }
  }
