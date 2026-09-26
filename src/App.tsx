@@ -71,7 +71,8 @@ export default function App(){
   }catch(e){
    console.error("Face tracking initialization failed:",e);
    landmarker.current=null;
-   const detail=e instanceof Error?e.message:String(e);\n   setStatus("Face tracking failed: "+detail+" — camera is still live. Retry face tracking.");
+   const detail=e instanceof Error?e.message:String(e);
+   setStatus("Face tracking failed: "+detail+" — camera is still live. Retry face tracking.");
    return false;
   }
  }
