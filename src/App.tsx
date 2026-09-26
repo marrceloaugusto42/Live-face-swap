@@ -158,18 +158,15 @@ if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&sourcePosePoints.current&
       }
       lmc.putImageData(ld,0,0);
 
-      const backgroundLayer=document.createElement("canvas");
-      backgroundLayer.width=w;backgroundLayer.height=h;
-      const bx=backgroundLayer.getContext("2d")!;
-      bx.save();
-      if(mirror){bx.translate(w,0);bx.scale(-1,1)}
-      bx.drawImage(v,0,0,w,h);
-      bx.restore();
-      bx.globalCompositeOperation="destination-out";
-      bx.drawImage(liveMaskCanvas,0,0,w,h);
-      bx.globalCompositeOperation="source-over";
-
-      x.drawImage(backgroundLayer,0,0);
+      // Keep the live camera fully visible as the base layer. The previous
+      // destination-out segmentation pass could erase the whole frame on
+      // browsers where the pose mask is soft/inverted, making the preview
+      // appear black or heavily darkened. The source person is then composited
+      // over the normal camera without modifying camera luminance.
+      x.save();
+      if(mirror){x.translate(w,0);x.scale(-1,1)}
+      x.drawImage(v,0,0,w,h);
+      x.restore();
       x.drawImage(personLayer,0,0);
       liveMask.close();
     }
