@@ -116,7 +116,7 @@ if(img&&sourceUrl&&img.complete&&img.naturalWidth&&lm&&sourcePoints.current&&!so
   }catch(err){
     console.error("Live face swap failed:",err);
   }
-else{
+}else{
   // Before source analysis is complete, keep the camera visible so the app
   // remains responsive and does not flash a stale/partial source.
   x.save();
