@@ -25,12 +25,36 @@ function warpTriangle(ctx:CanvasRenderingContext2D,img:HTMLImageElement,s:number
 
 export default function App(){
  const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null),source=useRef<HTMLImageElement>(null);
- const stream=useRef<MediaStream|null>(null),output=useRef<MediaStream|null>(null),landmarker=useRef<FaceLandmarker|null>(null),raf=useRef<number>(0),popup=useRef<Window|null>(null),sourcePoints=useRef<{x:number;y:number}[]|null>(null);\n const audioContext=useRef<AudioContext|null>(null),audioSource=useRef<MediaStreamAudioSourceNode|null>(null),audioDestination=useRef<MediaStreamAudioDestinationNode|null>(null);
+ const stream=useRef<MediaStream|null>(null),output=useRef<MediaStream|null>(null),landmarker=useRef<FaceLandmarker|null>(null),raf=useRef<number>(0),popup=useRef<Window|null>(null),sourcePoints=useRef<{x:number;y:number}[]|null>(null);
+ const audioContext=useRef<AudioContext|null>(null),audioSource=useRef<MediaStreamAudioSourceNode|null>(null),audioDestination=useRef<MediaStreamAudioDestinationNode|null>(null);
  const [running,setRunning]=useState(false),[sourceUrl,setSourceUrl]=useState(""),[status,setStatus]=useState("Camera is off");
  const [mirror,setMirror]=useState(true),[consent,setConsent]=useState(false),[ready,setReady]=useState(false),[outputReady,setOutputReady]=useState(false);
- const [devices,setDevices]=useState<MediaDeviceInfo[]>([]),[deviceId,setDeviceId]=useState("");\n const [voiceStyle,setVoiceStyle]=useState<"natural"|"male"|"female">("natural");
+ const [devices,setDevices]=useState<MediaDeviceInfo[]>([]),[deviceId,setDeviceId]=useState("");
+ const [voiceStyle,setVoiceStyle]=useState<"natural"|"male"|"female">("natural");
 
- useEffect(()=>()=>{cancelAnimationFrame(raf.current);stream.current?.getTracks().forEach(t=>t.stop());output.current?.getTracks().forEach(t=>t.stop());audioContext.current?.close().catch(()=>{});landmarker.current?.close();popup.current?.close()},[]);\n\n useEffect(()=>{if(running) setupAudioProcessing()},[voiceStyle]);\n\n async function setupAudioProcessing(){\n  const input=stream.current;if(!input||input.getAudioTracks().length===0)return;\n  try{\n   if(audioContext.current)await audioContext.current.close();\n   const ctx=new AudioContext();audioContext.current=ctx;await ctx.resume();\n   const src=ctx.createMediaStreamSource(new MediaStream([input.getAudioTracks()[0]]));audioSource.current=src;\n   const high=ctx.createBiquadFilter();high.type="highpass";high.frequency.value=voiceStyle==="female"?110:voiceStyle==="male"?65:75;high.Q.value=.7;\n   const low=ctx.createBiquadFilter();low.type="lowshelf";low.frequency.value=180;low.gain.value=voiceStyle==="female"?-2:voiceStyle==="male"?4:0;\n   const presence=ctx.createBiquadFilter();presence.type="peaking";presence.frequency.value=voiceStyle==="female"?3200:voiceStyle==="male"?1800:2500;presence.Q.value=1;presence.gain.value=voiceStyle==="female"?2:voiceStyle==="male"?-1.5:0;\n   const air=ctx.createBiquadFilter();air.type="highshelf";air.frequency.value=voiceStyle==="female"?5000:voiceStyle==="male"?4000:6000;air.gain.value=voiceStyle==="female"?4:voiceStyle==="male"?-4:0;\n   const comp=ctx.createDynamicsCompressor();comp.threshold.value=-24;comp.knee.value=12;comp.ratio.value=3;comp.attack.value=.003;comp.release.value=.18;\n   const dest=ctx.createMediaStreamDestination();audioDestination.current=dest;\n   src.connect(high).connect(low).connect(presence).connect(air).connect(comp).connect(dest);\n   const canvasStream=canvas.current?.captureStream(30);\n   if(canvasStream){output.current=new MediaStream([canvasStream.getVideoTracks()[0],...dest.stream.getAudioTracks()]);}\n   const win=window as LiveFaceWindow;win.liveFaceAudioOutput=dest.stream;win.liveFaceCallOutput=output.current||undefined;\n   setOutputReady(!!output.current);\n  }catch(e){console.error("Voice processing setup failed",e);setStatus("Voice processor could not start; camera output remains available.");}\n }
+ useEffect(()=>()=>{cancelAnimationFrame(raf.current);stream.current?.getTracks().forEach(t=>t.stop());output.current?.getTracks().forEach(t=>t.stop());audioContext.current?.close().catch(()=>{});landmarker.current?.close();popup.current?.close()},[]);
+
+ useEffect(()=>{if(running) setupAudioProcessing()},[voiceStyle]);
+
+ async function setupAudioProcessing(){
+  const input=stream.current;if(!input||input.getAudioTracks().length===0)return;
+  try{
+   if(audioContext.current)await audioContext.current.close();
+   const ctx=new AudioContext();audioContext.current=ctx;await ctx.resume();
+   const src=ctx.createMediaStreamSource(new MediaStream([input.getAudioTracks()[0]]));audioSource.current=src;
+   const high=ctx.createBiquadFilter();high.type="highpass";high.frequency.value=voiceStyle==="female"?110:voiceStyle==="male"?65:75;high.Q.value=.7;
+   const low=ctx.createBiquadFilter();low.type="lowshelf";low.frequency.value=180;low.gain.value=voiceStyle==="female"?-2:voiceStyle==="male"?4:0;
+   const presence=ctx.createBiquadFilter();presence.type="peaking";presence.frequency.value=voiceStyle==="female"?3200:voiceStyle==="male"?1800:2500;presence.Q.value=1;presence.gain.value=voiceStyle==="female"?2:voiceStyle==="male"?-1.5:0;
+   const air=ctx.createBiquadFilter();air.type="highshelf";air.frequency.value=voiceStyle==="female"?5000:voiceStyle==="male"?4000:6000;air.gain.value=voiceStyle==="female"?4:voiceStyle==="male"?-4:0;
+   const comp=ctx.createDynamicsCompressor();comp.threshold.value=-24;comp.knee.value=12;comp.ratio.value=3;comp.attack.value=.003;comp.release.value=.18;
+   const dest=ctx.createMediaStreamDestination();audioDestination.current=dest;
+   src.connect(high).connect(low).connect(presence).connect(air).connect(comp).connect(dest);
+   const canvasStream=canvas.current?.captureStream(30);
+   if(canvasStream){output.current=new MediaStream([canvasStream.getVideoTracks()[0],...dest.stream.getAudioTracks()]);}
+   const win=window as LiveFaceWindow;win.liveFaceAudioOutput=dest.stream;win.liveFaceCallOutput=output.current||undefined;
+   setOutputReady(!!output.current);
+  }catch(e){console.error("Voice processing setup failed",e);setStatus("Voice processor could not start; camera output remains available.");}
+ }
 
  async function refreshDevices(){
   try{const all=await navigator.mediaDevices.enumerateDevices();const cams=all.filter(d=>d.kind==="videoinput");setDevices(cams);if(!deviceId&&cams[0])setDeviceId(cams[0].deviceId)}catch(e){console.warn("Could not enumerate cameras",e)}
