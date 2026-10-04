@@ -1,277 +1,82 @@
-import {useEffect,useRef,useState} from "react";
-import {FaceLandmarker,FilesetResolver,PoseLandmarker} from "@mediapipe/tasks-vision";
+import{useEffect,useRef,useState}from"react";
+import{createDecartClient,models}from"@decartai/sdk";
 
-const MODEL="https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
-const POSE_MODEL="https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
-type OutputWindow=Window & {liveFaceOutput?: HTMLVideoElement};
-type LiveFaceWindow=Window & {liveFaceOutput?: MediaStream;liveFaceAudioOutput?: MediaStream;liveFaceCallOutput?: MediaStream};
+const MODEL=models.realtime("lucy-2.5");
+const PROMPT="Substitute the character in the live video with the person in the reference image. Preserve the reference person's identity, face, hair, skin tone, body proportions, clothing, and overall visual appearance. Transfer the live camera person's natural head, facial, arm, hand, torso, hip, and leg movement to the reference person with realistic anatomy, lighting, occlusion, and temporal consistency. Keep the full body visible and centered whenever the camera allows it.";
 
-// Stable, unique landmarks around the face plus key expression/pose points.
-const SWAP_POINTS=[10,33,54,67,109,127,143,152,162,172,176,234,263,284,297,338,356,366,377,389,397,400,454,61,291,13,14,78,308,93,323,132,361,58,288,149,378,150,379,197,5,4,1,168,6,9,195,2,98,327,129,358,130,359,174,399,175];
-const POSE_CONNECTIONS:number[][]=[[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[27,29],[29,31],[24,26],[26,28],[28,30],[30,32],[0,11],[0,12],[0,1],[1,3],[0,2],[2,4],[5,7],[7,9],[6,8],[8,10]];
-const POSE_POINTS=Array.from({length:33},(_,i)=>i);
+const err=(e:unknown)=>e instanceof Error?e.message||e.name:String(e);
 
-let swapTriangles:number[][]|null=null;let poseTriangles:number[][]|null=null;
-function triangulate(points:{x:number;y:number}[]){const n=points.length,minX=Math.min(...points.map(p=>p.x)),maxX=Math.max(...points.map(p=>p.x)),minY=Math.min(...points.map(p=>p.y)),maxY=Math.max(...points.map(p=>p.y)),d=Math.max(maxX-minX,maxY-minY)*20||100,mx=(minX+maxX)/2,my=(minY+maxY)/2;const pts=points.map((p,i)=>({x:p.x,y:p.y,i})).concat([{x:mx-d,y:my-d,i:n},{x:mx,y:my+d,i:n+1},{x:mx+d,y:my-d,i:n+2}]);const cc=(a:any,b:any,c:any)=>{const q=2*(a.x*(b.y-c.y)+b.x*(c.y-a.y)+c.x*(a.y-b.y));if(Math.abs(q)<1e-8)return{x:0,y:0,r:Infinity};const ux=((a.x*a.x+a.y*a.y)*(b.y-c.y)+(b.x*b.x+b.y*b.y)*(c.y-a.y)+(c.x*c.x+c.y*c.y)*(a.y-b.y))/q,uy=((a.x*a.x+a.y*a.y)*(c.x-b.x)+(b.x*b.x+b.y*b.y)*(a.x-c.x)+(c.x*c.x+c.y*c.y)*(b.x-a.x))/q;return{x:ux,y:uy,r:Math.hypot(ux-a.x,uy-a.y)}};let ts:number[][]=[[n,n+1,n+2]];for(let i=0;i<n;i++){const p=pts[i],bad=ts.filter(t=>{const z=cc(pts[t[0]],pts[t[1]],pts[t[2]]);return Math.hypot(p.x-z.x,p.y-z.y)<=z.r+1e-6}),edges:number[][]=[];for(const t of bad)for(let k=0;k<3;k++){const e=[t[k],t[(k+1)%3]],j=edges.findIndex(q=>q[0]===e[1]&&q[1]===e[0]);j>=0?edges.splice(j,1):edges.push(e)}ts=ts.filter(t=>!bad.includes(t));for(const e of edges)ts.push([e[0],e[1],i])}return ts.filter(t=>t.every(i=>i<n));}
-function convexHull(points:{x:number;y:number}[]){const pts=points.map((p,i)=>({x:p.x,y:p.y,i})).sort((a,b)=>a.x-b.x||a.y-b.y);const cross=(o:any,a:any,b:any)=>(a.x-o.x)*(b.y-o.y)-(a.y-o.y)*(b.x-o.x);const lo:any[]=[];for(const p of pts){while(lo.length>=2&&cross(lo[lo.length-2],lo[lo.length-1],p)<=0)lo.pop();lo.push(p)}const hi:any[]=[];for(let i=pts.length-1;i>=0;i--){const p=pts[i];while(hi.length>=2&&cross(hi[hi.length-2],hi[hi.length-1],p)<=0)hi.pop();hi.push(p)}return lo.slice(0,-1).concat(hi.slice(0,-1)).map(p=>p.i)}
-function warpTriangle(ctx:CanvasRenderingContext2D,img:HTMLImageElement,s:number[],d:number[],alpha:number){const [x0,y0,x1,y1,x2,y2]=s,[u0,v0,u1,v1,u2,v2]=d,den=x0*(y1-y2)+x1*(y2-y0)+x2*(y0-y1);if(Math.abs(den)<1e-5)return;const a=(u0*(y1-y2)+u1*(y2-y0)+u2*(y0-y1))/den,b=(v0*(y1-y2)+v1*(y2-y0)+v2*(y0-y1))/den,c=(u0*(x2-x1)+u1*(x0-x2)+u2*(x1-x0))/den,dv=(v0*(x2-x1)+v1*(x0-x2)+v2*(x1-x0))/den,e=(u0*(x1*y2-x2*y1)+u1*(x2*y0-x0*y2)+u2*(x0*y1-x1*y0))/den,f=(v0*(x1*y2-x2*y1)+v1*(x2*y0-x0*y2)+v2*(x0*y1-x1*y0))/den;ctx.save();ctx.globalAlpha=alpha;ctx.beginPath();ctx.moveTo(u0,v0);ctx.lineTo(u1,v1);ctx.lineTo(u2,v2);ctx.closePath();ctx.clip();ctx.setTransform(a,b,c,dv,e,f);ctx.drawImage(img,0,0);ctx.restore();}
+async function client(){
+ const r=await fetch("/api/decart-token",{method:"POST",headers:{"content-type":"application/json"},body:"{}"});
+ const data=await r.json().catch(()=>({}));
+ if(!r.ok)throw new Error(data.error||"Realtime AI session could not be created.");
+ if(!data.apiKey)throw new Error("DECART_API_KEY is not configured.");
+ return createDecartClient({apiKey:data.apiKey});
+}
 
 export default function App(){
-const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null),source=useRef<HTMLImageElement>(null),sourcePerson=useRef<HTMLCanvasElement|null>(null),sourceMask=useRef<HTMLCanvasElement|null>(null);
-const stream=useRef<MediaStream|null>(null),output=useRef<MediaStream|null>(null),landmarker=useRef<FaceLandmarker|null>(null),poseLandmarker=useRef<PoseLandmarker|null>(null),raf=useRef<number>(0),popup=useRef<Window|null>(null),sourcePoints=useRef<{x:number;y:number}[]|null>(null),sourcePosePoints=useRef<{x:number;y:number}[]|null>(null);
-const audioContext=useRef<AudioContext|null>(null),audioSource=useRef<MediaStreamAudioSourceNode|null>(null),audioDestination=useRef<MediaStreamAudioDestinationNode|null>(null),lastVideoTime=useRef(-1),lastDetectAt=useRef(0),lastPoseAt=useRef(0),lastLivePoints=useRef<any[]|null>(null),lastLivePose=useRef<any[]|null>(null),stableLivePoints=useRef<{x:number;y:number;z?:number}[]|null>(null),stableLivePose=useRef<{x:number;y:number;z?:number;visibility?:number}[]|null>(null),sourceAnalyzing=useRef(false);
-const [running,setRunning]=useState(false),[sourceUrl,setSourceUrl]=useState(""),[status,setStatus]=useState("Camera is off");
-const [mirror,setMirror]=useState(true),[consent,setConsent]=useState(false),[ready,setReady]=useState(false),[outputReady,setOutputReady]=useState(false);
-const [devices,setDevices]=useState<MediaDeviceInfo[]>([]),[deviceId,setDeviceId]=useState("");
-const [voiceStyle,setVoiceStyle]=useState<"natural"|"male"|"female">("natural");
-
-useEffect(()=>()=>{cancelAnimationFrame(raf.current);stream.current?.getTracks().forEach(t=>t.stop());output.current?.getTracks().forEach(t=>t.stop());audioContext.current?.close().catch(()=>{});landmarker.current?.close();poseLandmarker.current?.close();popup.current?.close()},[]);
-useEffect(()=>{if(running) setupAudioProcessing()},[voiceStyle]);
-
-useEffect(()=>{let cancelled=false;async function attachLiveCamera(){if(!running)return;const v=video.current,c=canvas.current,s=stream.current;if(!v||!s||!s.active)return;try{v.muted=true;v.playsInline=true;v.autoplay=true;v.srcObject=s;await new Promise<void>(resolve=>{if(v.readyState>=2)resolve();else v.onloadedmetadata=()=>resolve()});if(cancelled||video.current!==v||v.srcObject!==s)return;try{await v.play()}catch(err){if((err as DOMException)?.name!=="AbortError")throw err}if(cancelled||video.current!==v||v.srcObject!==s)return;setStatus("Live camera active — loading face tracking…");const ctx=c?.getContext("2d");if(c&&ctx&&"captureStream" in c){await setupAudioProcessing();const base=c.captureStream(30);if(!output.current)output.current=new MediaStream(base.getVideoTracks());const win=window as LiveFaceWindow;win.liveFaceOutput=output.current;win.liveFaceCallOutput=output.current;setOutputReady(true)}cancelAnimationFrame(raf.current);draw();await loadFaceLandmarker()}catch(err){if(cancelled)return;console.error("LiveCam attach/play failed:",err);const name=err instanceof DOMException?err.name:err instanceof Error?err.name:"Error";if(name!=="AbortError"){setStatus("LiveCam could not start: "+name+". Please allow camera/microphone access and try again.");stop()}}}void attachLiveCamera();return()=>{cancelled=true}},[running]);
-async function setupAudioProcessing(){const input=stream.current;if(!input||input.getAudioTracks().length===0)return;try{if(audioContext.current)await audioContext.current.close();const ctx=new AudioContext();audioContext.current=ctx;await ctx.resume();const src=ctx.createMediaStreamSource(new MediaStream([input.getAudioTracks()[0]]));audioSource.current=src;const high=ctx.createBiquadFilter();high.type="highpass";high.frequency.value=voiceStyle==="female"?110:voiceStyle==="male"?65:75;high.Q.value=.7;const low=ctx.createBiquadFilter();low.type="lowshelf";low.frequency.value=180;low.gain.value=voiceStyle==="female"?-2:voiceStyle==="male"?4:0;const presence=ctx.createBiquadFilter();presence.type="peaking";presence.frequency.value=voiceStyle==="female"?3200:voiceStyle==="male"?1800:2500;presence.Q.value=1;presence.gain.value=voiceStyle==="female"?2:voiceStyle==="male"?-1.5:0;const air=ctx.createBiquadFilter();air.type="highshelf";air.frequency.value=voiceStyle==="female"?5000:voiceStyle==="male"?4000:6000;air.gain.value=voiceStyle==="female"?4:voiceStyle==="male"?-4:0;const comp=ctx.createDynamicsCompressor();comp.threshold.value=-24;comp.knee.value=12;comp.ratio.value=3;comp.attack.value=.003;comp.release.value=.18;const dest=ctx.createMediaStreamDestination();audioDestination.current=dest;src.connect(high).connect(low).connect(presence).connect(air).connect(comp).connect(dest);const canvasStream=canvas.current?.captureStream(30);if(canvasStream)output.current=new MediaStream([canvasStream.getVideoTracks()[0],...dest.stream.getAudioTracks()]);const win=window as LiveFaceWindow;win.liveFaceAudioOutput=dest.stream;win.liveFaceCallOutput=output.current||undefined;setOutputReady(!!output.current)}catch(e){console.error("Voice processing setup failed",e);setStatus("Voice processor could not start; camera output remains available.")}}
-async function refreshDevices(){try{const all=await navigator.mediaDevices.enumerateDevices();const cams=all.filter(d=>d.kind==="videoinput");setDevices(cams);if(!deviceId&&cams[0])setDeviceId(cams[0].deviceId)}catch(e){console.warn("Could not enumerate cameras",e)}}
-
-async function loadFaceLandmarker(){
-try{
-setStatus("Loading face tracking engine…");
-const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm");
-setStatus("Loading face model…");
-const lm=await FaceLandmarker.createFromModelPath(vision,MODEL);
-const pl=await PoseLandmarker.createFromModelPath(vision,POSE_MODEL);
-setStatus("Starting face tracking…");
-await lm.setOptions({runningMode:"VIDEO",numFaces:1,minFaceDetectionConfidence:.5,minFacePresenceConfidence:.5,minTrackingConfidence:.5,outputFaceBlendshapes:false,outputFacialTransformationMatrixes:true});
-landmarker.current=lm;
-await pl.setOptions({runningMode:"VIDEO",numPoses:1,minPoseDetectionConfidence:.5,minPosePresenceConfidence:.5,minTrackingConfidence:.5,outputSegmentationMasks:true});
-poseLandmarker.current=pl;
-setStatus(source.current?.complete&&sourceUrl?"Motion-transfer engine ready — source analysis starting…":"Live camera active — add a full-body source image for motion transfer.");
-if(source.current?.complete&&sourceUrl)void analyzeSource();
-return true;
-}catch(e){
-console.error("Face tracking initialization failed:",e);
-landmarker.current=null;
-const detail=e instanceof Error?e.name+": "+(e.message||""):e instanceof DOMException?e.name+": "+(e.message||""):typeof e==="object"&&e!==null?JSON.stringify(e):String(e);
-setStatus("Body/face tracking failed: "+(detail||"Unknown model error")+". Camera is still live; retry face tracking.");
-return false;
-}
-}
-async function start(){if(!consent){setStatus("Confirm that you have permission to use the source face.");return}if(running)return;try{setStatus("Requesting camera and microphone…");const requested=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:"user",...(deviceId?{deviceId:{exact:deviceId}}:{})},audio:true});stream.current=requested;setRunning(true);setReady(true);setStatus("Camera permission granted — attaching live camera…");await refreshDevices();}catch(e){console.error("LiveFace camera startup error:",e);const detail=e instanceof DOMException?e.name+(e.message?": "+e.message:""):e instanceof Error?e.name+": "+e.message:typeof e==="object"&&e!==null?String(e):String(e);setStatus("Camera error: "+(detail||"Unknown error")+". Check browser camera/microphone permission.");stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;setOutputReady(false);setRunning(false);setReady(false)}}
-function stop(){cancelAnimationFrame(raf.current);stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;audioContext.current?.close().catch(()=>{});audioContext.current=null;audioSource.current=null;audioDestination.current=null;output.current?.getTracks().forEach(t=>t.stop());output.current=null;const win=window as LiveFaceWindow;delete win.liveFaceAudioOutput;delete win.liveFaceCallOutput;delete win.liveFaceOutput;setOutputReady(false);setRunning(false);setReady(false);setStatus("Camera is off")}
-function draw(){
-const v=video.current,c=canvas.current,pl=poseLandmarker.current,img=source.current;
-if(!v||!c){raf.current=requestAnimationFrame(draw);return}
-const w=v.videoWidth||1280,h=v.videoHeight||720;
-if(c.width!==w||c.height!==h){c.width=w;c.height=h}
-const x=c.getContext("2d")!;
-x.clearRect(0,0,w,h);
-
-// Before the source person is ready, show the normal camera.
-if(!(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&sourcePosePoints.current&&sourceMask.current&&!sourceAnalyzing.current)){
-  x.save();
-  if(mirror){x.translate(w,0);x.scale(-1,1)}
-  x.drawImage(v,0,0,w,h);
-  x.restore();
+ const watch=new URLSearchParams(location.search).get("watch");
+ return watch?<Watch token={watch}/>:<Studio/>;
 }
 
-if(img&&sourceUrl&&img.complete&&img.naturalWidth&&pl&&sourcePosePoints.current&&sourceMask.current&&!sourceAnalyzing.current){
+function Watch({token}:{token:string}){
+ const video=useRef<HTMLVideoElement>(null),sub=useRef<any>(null);
+ const[status,setStatus]=useState("Connecting…"),[live,setLive]=useState(false);
+ useEffect(()=>{let dead=false;(async()=>{try{
+   const c=await client();
+   const s=await c.realtime.subscribe({token,onRemoteStream:(stream:any)=>{
+     if(dead)return;const v=video.current;if(!v)return;
+     v.srcObject=stream;void v.play().catch(()=>{});setLive(true);setStatus("LIVE · AI transformed output");
+   }});
+   sub.current=s;s.on("connectionChange",(state:string)=>{
+     if(dead)return;
+     if(state==="connected"||state==="generating"){setLive(true);setStatus("LIVE · AI transformed output")}
+     else if(state==="reconnecting")setStatus("Reconnecting…");
+   });
+ }catch(e){if(!dead)setStatus("Output connection failed: "+err(e))}})();
+ return()=>{dead=true;sub.current?.disconnect();sub.current=null}},[token]);
+ return <main className="outputPage"><video ref={video} autoPlay playsInline/><div className="outputOverlay"><span className={"session "+(live?"sessionOn":"")}>● {live?"LIVE":"CONNECTING"}</span><strong>LiveFace AI Output</strong><span>{status}</span></div></main>
+}
+
+function Studio(){
+ const input=useRef<HTMLVideoElement>(null),output=useRef<HTMLVideoElement>(null),raw=useRef<MediaStream|null>(null),rt=useRef<any>(null),file=useRef<File|null>(null),urlRef=useRef("");
+ const[running,setRunning]=useState(false),[ready,setReady]=useState(false),[outReady,setOutReady]=useState(false),[status,setStatus]=useState("Camera is off"),[source,setSource]=useState(""),[sourceName,setSourceName]=useState(""),[consent,setConsent]=useState(false),[mirror,setMirror]=useState(true),[devices,setDevices]=useState<MediaDeviceInfo[]>([]),[deviceId,setDeviceId]=useState(""),[share,setShare]=useState(""),[quality,setQuality]=useState("—"),[view,setView]=useState<"dashboard"|"realtime"|"tools"|"settings">("dashboard");
+
+ useEffect(()=>()=>{rt.current?.disconnect();raw.current?.getTracks().forEach(t=>t.stop());if(urlRef.current)URL.revokeObjectURL(urlRef.current)},[]);
+ async function devicesList(){try{const d=await navigator.mediaDevices.enumerateDevices();const cams=d.filter(x=>x.kind==="videoinput");setDevices(cams);if(!deviceId&&cams[0])setDeviceId(cams[0].deviceId)}catch{}}
+ function setShareUrl(token:string){const u=new URL(location.href);u.search="";u.searchParams.set("watch",token);setShare(u.toString())}
+ function upload(e:React.ChangeEvent<HTMLInputElement>){const f=e.target.files?.[0];if(!f)return;if(!f.type.startsWith("image/")){setStatus("Use a JPG, PNG, or WebP image.");return}if(urlRef.current)URL.revokeObjectURL(urlRef.current);file.current=f;urlRef.current=URL.createObjectURL(f);setSource(urlRef.current);setSourceName(f.name);setStatus(running?"Updating the AI reference…":"Reference loaded — start LiveCam");if(rt.current)void apply(f)}
+ async function apply(f:File){try{setStatus("Applying full-body reference…");await rt.current.set({prompt:PROMPT,image:f,enhance:true});setStatus("AI full-body transformation is live.")}catch(e){setStatus("Reference update failed: "+err(e))}}
+ async function start(){
+  if(!consent){setStatus("Confirm that you have permission to use the source image.");return}
+  if(!file.current){setStatus("Upload a full-body source image first.");return}
+  let stream:MediaStream|null=null;
   try{
-    const now=performance.now();
-    if(now-lastPoseAt.current>=33){
-      const pr=pl.detectForVideo(v,now);
-      const live=pr.landmarks?.[0];
-      if(live){
-        const raw=live.map((q:any)=>({x:q.x,y:q.y,z:q.z,visibility:q.visibility}));
-        const prev=stableLivePose.current;
-        const alpha=.55;
-        stableLivePose.current=raw.map((q:any,i:number)=>{
-          const p=prev?.[i];
-          if(!p)return q;
-          return {x:p.x+(q.x-p.x)*alpha,y:p.y+(q.y-p.y)*alpha,z:(p.z??0)+((q.z??0)-(p.z??0))*alpha,visibility:q.visibility};
-        });
-        lastLivePose.current=stableLivePose.current;
-      }
-      lastPoseAt.current=now;
-    }
-
-    const livePose=lastLivePose.current;
-    const srcPose=sourcePosePoints.current;
-    const liveResult=pl.detectForVideo(v,now);
-    const liveMask=liveResult.segmentationMasks?.[0];
-    if(livePose&&srcPose&&livePose.length===srcPose.length&&liveMask){
-      // Use the same anatomical control points in both images. Add four
-      // body-box anchors so the entire source image can deform, not just
-      // the center of the skeleton.
-      const visible=livePose.filter((q:any)=>q.visibility==null||q.visibility>.25);
-      const sb=srcPose.reduce((a:any,q:any)=>({minX:Math.min(a.minX,q.x),maxX:Math.max(a.maxX,q.x),minY:Math.min(a.minY,q.y),maxY:Math.max(a.maxY,q.y)}),{minX:1,maxX:0,minY:1,maxY:0});
-      const lb=visible.reduce((a:any,q:any)=>({minX:Math.min(a.minX,q.x),maxX:Math.max(a.maxX,q.x),minY:Math.min(a.minY,q.y),maxY:Math.max(a.maxY,q.y)}),{minX:1,maxX:0,minY:1,maxY:0});
-      const sx=Math.max(.001,sb.maxX-sb.minX),sy=Math.max(.001,sb.maxY-sb.minY);
-      const lx=Math.max(.001,lb.maxX-lb.minX),ly=Math.max(.001,lb.maxY-lb.minY);
-      const srcPts=[
-        ...srcPose.map((q:any)=>({x:q.x,y:q.y})),
-        {x:sb.minX-sx*.18,y:sb.minY-sy*.10},{x:sb.maxX+sx*.18,y:sb.minY-sy*.10},
-        {x:sb.maxX+sx*.18,y:sb.maxY+sy*.10},{x:sb.minX-sx*.18,y:sb.maxY+sy*.10}
-      ];
-      const dstPts=[
-        ...livePose.map((q:any)=>({x:mirror?1-q.x:q.x,y:q.y})),
-        {x:(mirror?1-(lb.minX-lx*.18):lb.minX-lx*.18),y:lb.minY-ly*.10},
-        {x:(mirror?1-(lb.maxX+lx*.18):lb.maxX+lx*.18),y:lb.minY-ly*.10},
-        {x:(mirror?1-(lb.maxX+lx*.18):lb.maxX+lx*.18),y:lb.maxY+ly*.10},
-        {x:(mirror?1-(lb.minX-lx*.18):lb.minX-lx*.18),y:lb.maxY+ly*.10}
-      ];
-
-      const srcPx=srcPts.map((q:any)=>({x:q.x*img.naturalWidth,y:q.y*img.naturalHeight}));
-      const dstPx=dstPts.map((q:any)=>({x:q.x*w,y:q.y*h}));
-      const tris=triangulate(srcPx);
-      const personLayer=document.createElement("canvas");
-      personLayer.width=w;personLayer.height=h;
-      const px=personLayer.getContext("2d")!;
-
-      // Warp both the source pixels and the source-person alpha mask with
-      // exactly the same mesh. This prevents the source photo background
-      // from appearing and makes the complete person occupy the live body.
-      for(const tri of tris){
-        const src=tri.flatMap(i=>[srcPx[i].x,srcPx[i].y]);
-        const dst=tri.flatMap(i=>[dstPx[i].x,dstPx[i].y]);
-        warpTriangle(px,img,src,dst,1);
-      }
-
-      const warpedMask=document.createElement("canvas");
-      warpedMask.width=w;warpedMask.height=h;
-      const mx=warpedMask.getContext("2d")!;
-      const maskImg=sourceMask.current;
-      for(const tri of tris){
-        const src=tri.flatMap(i=>[srcPts[i].x*maskImg.width,srcPts[i].y*maskImg.height]);
-        const dst=tri.flatMap(i=>[dstPx[i].x,dstPx[i].y]);
-        warpTriangle(mx,maskImg as any,src,dst,1);
-      }
-
-      px.globalCompositeOperation="destination-in";
-      px.drawImage(warpedMask,0,0);
-      // Remove the live user's silhouette from the camera so the live
-      // person cannot remain visible around the replacement.
-      const liveMaskCanvas=document.createElement("canvas");
-      liveMaskCanvas.width=liveMask.width;liveMaskCanvas.height=liveMask.height;
-      const lmc=liveMaskCanvas.getContext("2d")!;
-      const lv=liveMask.getAsFloat32Array();
-      const ld=lmc.createImageData(liveMaskCanvas.width,liveMaskCanvas.height);
-      for(let i=0;i<lv.length;i++){
-        const a=Math.max(0,Math.min(255,Math.round(lv[i]*255)));
-        const j=i*4;ld.data[j]=255;ld.data[j+1]=255;ld.data[j+2]=255;ld.data[j+3]=a;
-      }
-      lmc.putImageData(ld,0,0);
-
-      // Keep the live camera fully visible as the base layer. The previous
-      // destination-out segmentation pass could erase the whole frame on
-      // browsers where the pose mask is soft/inverted, making the preview
-      // appear black or heavily darkened. The source person is then composited
-      // over the normal camera without modifying camera luminance.
-      x.save();
-      if(mirror){x.translate(w,0);x.scale(-1,1)}
-      x.drawImage(v,0,0,w,h);
-      x.restore();
-      x.drawImage(personLayer,0,0);
-      liveMask.close();
-    }
-  }catch(err){
-    console.error("Full-body motion transfer failed:",err);
+   setStatus("Requesting camera and microphone…");const c=await client();
+   stream=await navigator.mediaDevices.getUserMedia({audio:true,video:{facingMode:"user",frameRate:MODEL.fps,width:MODEL.width,height:MODEL.height,...(deviceId?{deviceId:{exact:deviceId}}:{})}});
+   raw.current=stream;const v=input.current;if(v){v.srcObject=stream;v.muted=true;v.playsInline=true;await v.play()}
+   setReady(true);setStatus("Connecting realtime AI…");
+   const session=await c.realtime.connect(stream,{model:MODEL,mirror:mirror?"auto":false,initialState:{prompt:{text:PROMPT,enhance:true},image:file.current},
+    onRemoteStream:(s:any)=>{const v=output.current;if(!v)return;v.srcObject=s;v.muted=true;v.playsInline=true;void v.play().catch(()=>{});setOutReady(true);setRunning(true);setStatus("AI full-body LiveCam is live.")},
+    onConnectionQuality:(q:any)=>setQuality(q.metrics?.fps?Math.round(q.metrics.fps)+" FPS":q.quality||"—")
+   });
+   rt.current=session;
+   session.on("connectionChange",(state:string)=>{if(state==="connected"||state==="generating"){setRunning(true);setStatus("AI full-body LiveCam is live.");if(session.subscribeToken)setShareUrl(session.subscribeToken)}else if(state==="reconnecting")setStatus("LiveCam reconnecting…");else if(state==="disconnected")setStatus("LiveCam disconnected.")});
+   if(session.subscribeToken)setShareUrl(session.subscribeToken);await devicesList();
+  }catch(e){
+   console.error(e);stream?.getTracks().forEach(t=>t.stop());raw.current=null;rt.current?.disconnect();rt.current=null;setRunning(false);setReady(false);setOutReady(false);
+   const m=err(e);setStatus(/DECART|api.?key|configured|401|403/i.test(m)?"AI engine is not configured. Add DECART_API_KEY in Vercel, then redeploy.":"LiveCam error: "+m)
   }
-}else if(img&&sourceUrl&&!sourceAnalyzing.current){
-  if(!sourcePosePoints.current)setStatus("Upload a clear full-body person image.");
+ }
+ function stop(){rt.current?.disconnect();rt.current=null;raw.current?.getTracks().forEach(t=>t.stop());raw.current=null;if(input.current)input.current.srcObject=null;if(output.current)output.current.srcObject=null;setRunning(false);setReady(false);setOutReady(false);setShare("");setQuality("—");setStatus("Camera is off")}
+ async function copy(){if(!share){setStatus("Start LiveCam first.");return}try{await navigator.clipboard.writeText(share);setStatus("OBS output URL copied.")}catch{setStatus("OBS URL is ready to copy.")}}
+ function open(){if(share)window.open(share,"liveface-output","width=1280,height=720");else setStatus("Start LiveCam first.")}
+
+ function Dashboard(){return <div className="dashboard"><div className="welcome"><div><span className="eyebrow">CREATOR WORKSPACE</span><h1>Your studio, ready to create.</h1><p>Full-body reference in. Realtime AI transformation out. Your camera supplies the movement.</p></div><button className="primary heroButton" onClick={()=>setView("realtime")}>Open Realtime Studio <span>→</span></button></div><div className="statgrid"><div className="stat"><span>WORKSPACE</span><b>LiveFace Studio</b><small>Realtime AI creator</small></div><div className="stat"><span>LIVE ENGINE</span><b className={running?"green":"muted"}>{running?"ACTIVE":"READY"}</b><small>Lucy 2.5 realtime</small></div><div className="stat"><span>OUTPUT</span><b>{quality}</b><small>AI transformed stream</small></div><div className="stat"><span>OBS</span><b>{share?"READY":"—"}</b><small>Browser Source</small></div></div><div className="sectionHead"><div><span className="eyebrow">WORKSPACES</span><h2>Launch a creator tool</h2></div></div><div className="toolgrid"><button className="toolcard featured" onClick={()=>setView("realtime")}><div className="toolvisual"><div className="scanline"/><span>AI LIVE</span></div><div className="toolcopy"><small>REALTIME · FULL BODY</small><h3>Realtime Studio</h3><p>AI follows your live movement while preserving the selected persona.</p><strong>Open workspace →</strong></div></button><button className="toolcard" onClick={()=>setView("tools")}><div className="toolicon">✦</div><div className="toolcopy"><small>REFERENCE</small><h3>AI Persona</h3><p>Swap the reference image during an active session.</p><strong>Explore controls →</strong></div></button><button className="toolcard" onClick={()=>setView("settings")}><div className="toolicon voice">◌</div><div className="toolcopy"><small>OUTPUT</small><h3>OBS & Streaming</h3><p>Use a clean subscriber URL for OBS Browser Source.</p><strong>Open settings →</strong></div></button></div></div>}
+
+ function Tools(){return <div className="simplePage"><span className="eyebrow">CREATOR TOOLS</span><h1>Realtime AI controls.</h1><p>Lucy 2.5 performs the live transformation; the workspace controls the reference and output.</p><div className="toolgrid"><div className="toolcard"><div className="toolicon">✦</div><div className="toolcopy"><small>REFERENCE IMAGE</small><h3>Full-body persona</h3><p>Use a clear, unobstructed full-body image. Match the framing to the camera.</p><button className="secondary" onClick={()=>setView("realtime")}>Open source controls</button></div></div><div className="toolcard"><div className="toolicon voice">◌</div><div className="toolcopy"><small>ENGINE</small><h3>Lucy 2.5</h3><p>Realtime WebRTC transformation stream with reference-image support.</p></div></div></div></div>}
+ function Settings(){return <div className="simplePage"><span className="eyebrow">SETTINGS</span><h1>Streaming preferences.</h1><p>Paste the generated subscriber URL into OBS as a Browser Source.</p><div className="settingsPanel"><div><strong>Mirror preview</strong><span>{mirror?"Creator preview is mirrored.":"Creator preview is not mirrored."}</span></div><button className={"switch "+(mirror?"active":"")} onClick={()=>setMirror(!mirror)}><i/></button></div><div className="settingsPanel"><div><strong>OBS output</strong><span>{share?"Live subscriber URL available.":"Start LiveCam to create it."}</span></div><button className="secondary" disabled={!share} onClick={copy}>Copy OBS URL</button></div><div className="settingsPanel"><div><strong>AI engine</strong><span>Decart Lucy 2.5 realtime video transformation.</span></div><span className={"badge "+(running?"good":"warn")}>{running?"CONNECTED":"READY"}</span></div></div>}
+ function Realtime(){return <div className="studio"><div className="studioTop"><div><span className="eyebrow">REALTIME · FULL BODY</span><h1>Realtime Studio</h1><p>AI replaces the live person with the selected full-body persona while following live movement.</p></div><div className="studioActions"><span className={"session "+(running?"sessionOn":"")}>● {running?"LIVE":"READY"}</span><button className="secondary compact" onClick={()=>setView("dashboard")}>Dashboard</button></div></div><div className="studioGrid"><div className="stageWrap"><div className="stage"><video ref={input} className="inputPreview" playsInline muted autoPlay/><video ref={output} className="aiPreview" playsInline muted autoPlay/>{!running&&<div className="empty"><div className="orb">◉</div><strong>Realtime AI preview</strong><span>Upload a full-body reference and start LiveCam.</span></div>}<div className={"live "+(running?"on":"")}>● {running?"LIVE · AI FULL BODY":"READY"}</div></div><div className="stageFoot"><span>AI transformed preview</span><span>{outReady?(quality==="—"?"Realtime output connected":quality):"Output appears after LiveCam connects"}</span></div></div><aside className="controlRail"><div className="card"><div className="cardtitle">SOURCE PERSON</div><label className="upload large">{source?<img src={source} alt="Selected source"/>:<><div className="uploadicon">＋</div><span>Upload full-body image</span></>}<input type="file" accept="image/jpeg,image/png,image/webp" onChange={upload}/></label>{sourceName&&<small className="hint">{sourceName}</small>}<small className="hint">Use an image you own or have permission to use. Clear full-body references produce better results.</small></div><div className="card"><div className="cardtitle">LIVE INPUT</div><select className="cameraSelect" value={deviceId} disabled={running||!devices.length} onChange={e=>setDeviceId(e.target.value)}><option value="">{devices.length?"Select camera":"Camera appears after permission"}</option>{devices.map((d,i)=><option key={d.deviceId} value={d.deviceId}>{d.label||`Camera ${i+1}`}</option>)}</select><label className="check"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/><span>I have permission to use this source image.</span></label><button className="primary" onClick={running?stop:start}>{running?"Stop LiveCam":"Start LiveCam"}</button></div><div className="card"><div className="cardtitle">OBS / OUTPUT</div><div className="outputrow"><button className="secondary" disabled={!share} onClick={open}>Open output</button><button className="secondary" disabled={!share} onClick={copy}>Copy OBS URL</button></div><small className="hint">In OBS add a Browser Source and paste the copied URL. It subscribes to the transformed WebRTC stream, not the raw camera.</small></div><div className="status"><span className={ready?"dot ready":"dot"}/>{status}</div></aside></div><div className="workflow"><div><span>OUTPUT WORKFLOW</span><strong>Camera → Lucy 2.5 realtime AI → transformed WebRTC stream → OBS Browser Source</strong></div><div><span>CONSENT</span><strong>Only use reference images you own or have explicit permission to use.</strong></div></div></div>}
+
+ return <main><div className="appShell"><nav className="sidebar"><div className="sideBrand"><span className="mark">◉</span><div><b>LiveFace</b><small>CREATOR STUDIO</small></div></div><div className="navGroup"><span className="navLabel">WORKSPACE</span><button className={view==="dashboard"?"navItem active":"navItem"} onClick={()=>setView("dashboard")}>⌂ <span>Dashboard</span></button><button className={view==="realtime"?"navItem active":"navItem"} onClick={()=>setView("realtime")}>◉ <span>Realtime Full Body</span><em>AI</em></button></div><div className="navGroup"><span className="navLabel">CREATE</span><button className={view==="tools"?"navItem active":"navItem"} onClick={()=>setView("tools")}>✦ <span>Creative Tools</span></button><button className="navItem" onClick={()=>setView("tools")}>◌ <span>Voice</span></button></div><div className="navBottom"><button className={view==="settings"?"navItem active":"navItem"} onClick={()=>setView("settings")}>⚙ <span>Settings</span></button><div className="sideStatus"><span className="statusDot"/><div><b>{running?"AI LiveCam active":"Studio ready"}</b><small>{running?"Lucy 2.5 realtime":"Browser workspace"}</small></div></div></div></nav><div className="content">{view==="dashboard"?<Dashboard/>:view==="realtime"?<Realtime/>:view==="tools"?<Tools/>:<Settings/>}</div></div></main>
 }
-
-raf.current=requestAnimationFrame(draw);
-}
-async function analyzeSource(){
-const img=source.current,l=landmarker.current,pl=poseLandmarker.current;
-if(!img||!img.complete||!img.naturalWidth||!l||!pl||sourceAnalyzing.current)return false;
-sourceAnalyzing.current=true;
-try{
-  setStatus("Analyzing full-body source…");
-  await l.setOptions({runningMode:"IMAGE"});
-  await pl.setOptions({runningMode:"IMAGE"});
-  const max=1024;
-  const scale=Math.min(1,max/img.naturalWidth,max/img.naturalHeight);
-  const sw=Math.max(1,Math.round(img.naturalWidth*scale));
-  const sh=Math.max(1,Math.round(img.naturalHeight*scale));
-  const probe=document.createElement("canvas");
-  probe.width=sw;probe.height=sh;
-  probe.getContext("2d")!.drawImage(img,0,0,sw,sh);
-
-  const body=pl.detect(probe);
-  const bp=body.landmarks?.[0];
-  if(!bp){
-    sourcePoints.current=null;sourcePosePoints.current=null;sourceMask.current=null;swapTriangles=null;
-    setStatus("No full body detected — upload a clear full-body person image.");
-    return false;
-  }
-
-  // Keep the complete source body. The segmentation mask removes the
-  // original photograph background before the person is animated.
-  const mask=body.segmentationMasks?.[0];
-  if(mask){
-    const values=mask.getAsFloat32Array();
-    const mc=document.createElement("canvas");
-    mc.width=mask.width;mc.height=mask.height;
-    const mctx=mc.getContext("2d")!;
-    const md=mctx.createImageData(mc.width,mc.height);
-    for(let i=0;i<values.length;i++){
-      const a=Math.max(0,Math.min(255,Math.round(values[i]*255)));
-      const j=i*4;md.data[j]=255;md.data[j+1]=255;md.data[j+2]=255;md.data[j+3]=a;
-    }
-    mctx.putImageData(md,0,0);
-    sourceMask.current=mc;
-    mask.close();
-  }else{
-    sourceMask.current=null;
-  }
-
-  const r=l.detect(probe);
-  const p=r.faceLandmarks?.[0];
-  sourcePosePoints.current=bp.map((q:any)=>({x:q.x,y:q.y,z:q.z}));
-  sourcePoints.current=p?SWAP_POINTS.map(i=>({x:p[i].x*img.naturalWidth,y:p[i].y*img.naturalHeight})):null;
-  swapTriangles=null;
-
-  await l.setOptions({runningMode:"VIDEO"});
-  await pl.setOptions({runningMode:"VIDEO"});
-  setStatus("Full-body source ready — live movement controls the entire person.");
-  return true;
-}catch(e){
-  console.error("Source full-body analysis failed",e);
-  try{await l.setOptions({runningMode:"VIDEO"})}catch{}
-  try{await pl.setOptions({runningMode:"VIDEO"})}catch{}
-  sourcePoints.current=null;sourcePosePoints.current=null;sourceMask.current=null;swapTriangles=null;
-  setStatus("Full-body source analysis failed — upload a clear full-body image and retry.");
-  return false;
-}finally{sourceAnalyzing.current=false}
-}
-function upload(e:React.ChangeEvent<HTMLInputElement>){const f=e.target.files?.[0];if(!f)return;const url=URL.createObjectURL(f);setSourceUrl(url);sourcePoints.current=null;sourcePosePoints.current=null;sourcePerson.current=null;poseTriangles=null;swapTriangles=null;lastLivePose.current=null;stableLivePose.current=null;stableLivePoints.current=null;if(source.current){source.current.onload=async()=>{const ok=await analyzeSource();if(!ok&&!landmarker.current)setStatus("Source loaded — face tracker is still loading…");};source.current.src=url}setStatus(running?"Analyzing full-body source…":"Source loaded — start the camera and use a full-body source.")}
-function openOutput(){if(!output.current||!running){setStatus("Start the camera before opening the output.");return}const w=window.open("","liveface-output","width=960,height=620");if(!w){setStatus("Popup blocked. Allow popups for this site.");return}popup.current=w;w.document.title="LiveFace Camera Output";w.document.body.style.cssText="margin:0;background:#000;overflow:hidden";const v=w.document.createElement("video");v.autoplay=true;v.playsInline=true;v.muted=false;v.volume=1;v.style.cssText="width:100vw;height:100vh;object-fit:contain";v.srcObject=output.current;w.document.body.appendChild(v);(w as OutputWindow).liveFaceOutput=v}
-function copyOutput(){if(output.current){const win=window as LiveFaceWindow;win.liveFaceOutput=output.current;win.liveFaceCallOutput=output.current;navigator.clipboard?.writeText("LiveFace processed call stream is available as window.liveFaceCallOutput").catch(()=>{});setStatus("Processed camera + microphone stream exposed as window.liveFaceCallOutput.")}}
-const [view,setView]=useState<"dashboard"|"realtime"|"tools"|"settings">("dashboard");
-
-function nav(next:"dashboard"|"realtime"|"tools"|"settings"){setView(next)}
-function Dashboard(){
-  return <div className="dashboard">
-    <div className="welcome"><div><span className="eyebrow">CREATOR WORKSPACE</span><h1>Your studio, ready to create.</h1><p>Build a live persona, preview the transformation, and route the finished camera into your streaming workflow.</p></div><button className="primary heroButton" onClick={()=>nav("realtime")}>Open Realtime Studio <span>→</span></button></div>
-    <div className="statgrid"><div className="stat"><span>WORKSPACE</span><b>LiveFace Studio</b><small>Creator workspace</small></div><div className="stat"><span>LIVE ENGINE</span><b className={running?"green":"muted"}>{running?"ACTIVE":"READY"}</b><small>Browser processing</small></div><div className="stat"><span>OUTPUT</span><b>30 FPS</b><small>Camera + microphone</small></div><div className="stat"><span>PRIVACY</span><b>LOCAL</b><small>Media stays in browser</small></div></div>
-    <div className="sectionHead"><div><span className="eyebrow">WORKSPACES</span><h2>Launch a creator tool</h2></div><span className="mutedText">Your main workspace</span></div>
-    <div className="toolgrid">
-      <button className="toolcard featured" onClick={()=>nav("realtime")}><div className="toolvisual"><div className="scanline"/><span>LIVE</span></div><div className="toolcopy"><small>REALTIME · FULL BODY</small><h3>Realtime Studio</h3><p>Use a full-body source image and let your camera drive the live performance.</p><strong>Open workspace →</strong></div></button>
-      <button className="toolcard" onClick={()=>nav("tools")}><div className="toolicon">✦</div><div className="toolcopy"><small>CREATIVE TOOLS</small><h3>AI Image Lab</h3><p>Prepare source images and creator assets for your live persona.</p><strong>Explore tools →</strong></div></button>
-      <button className="toolcard" onClick={()=>nav("tools")}><div className="toolicon voice">◌</div><div className="toolcopy"><small>VOICE</small><h3>Voice Controls</h3><p>Choose the processing profile used by your creator output.</p><strong>Open controls →</strong></div></button>
-    </div>
-    <div className="lowergrid"><div className="panel"><div className="panelhead"><div><span className="eyebrow">GET STARTED</span><h3>Three steps to go live</h3></div></div><div className="steps"><div><b>01</b><span><strong>Add your source</strong>Upload a clear full-body image you have permission to use.</span></div><div><b>02</b><span><strong>Connect your camera</strong>Choose your camera and microphone, then preview the result.</span></div><div><b>03</b><span><strong>Send it to your workflow</strong>Open the clean output window or expose the stream for your desktop bridge.</span></div></div></div><div className="panel quick"><span className="eyebrow">CURRENT SESSION</span><h3>{sourceUrl?"Source loaded":"No source selected"}</h3><p>{running?"Your camera is live.":"Start from the Realtime Studio when you are ready."}</p><button className="secondary" onClick={()=>nav("realtime")}>{running?"Manage live session":"Open Realtime Studio"}</button></div></div>
-  </div>
-}
-function Tools(){return <div className="simplePage"><span className="eyebrow">CREATOR TOOLS</span><h1>Tools for your workspace.</h1><p>LiveFace is organized around the creator workflow: prepare your source, control the live camera, tune voice, and route the output.</p><div className="toolgrid"><div className="toolcard"><div className="toolicon">✦</div><div className="toolcopy"><small>SOURCE</small><h3>Full-body source</h3><p>Use a clear image of a person you are authorized to use.</p><button className="secondary" onClick={()=>nav("realtime")}>Open source controls</button></div></div><div className="toolcard"><div className="toolicon voice">◌</div><div className="toolcopy"><small>AUDIO</small><h3>Voice profile</h3><p>Natural, male-style, or female-style processing.</p><button className="secondary" onClick={()=>nav("realtime")}>Open voice controls</button></div></div></div></div>}
-function Settings(){return <div className="simplePage"><span className="eyebrow">SETTINGS</span><h1>Studio preferences.</h1><p>Your current camera and preview preferences stay inside this browser session.</p><div className="settingsPanel"><div><strong>Mirror preview</strong><span>Flip the local preview horizontally.</span></div><button className={"switch "+(mirror?"active":"")} onClick={()=>setMirror(!mirror)}><i/></button></div><div className="settingsPanel"><div><strong>Source permission</strong><span>{consent?"Permission confirmed for this session.":"Confirmation required before starting."}</span></div><span className={"badge "+(consent?"good":"warn")}>{consent?"READY":"REQUIRED"}</span></div></div>}
-function Realtime(){
- return <div className="studio"><div className="studioTop"><div><span className="eyebrow">REALTIME · FULL BODY</span><h1>Realtime Studio</h1><p>One reference image. Your live movement drives the workspace preview.</p></div><div className="studioActions"><span className={"session "+(running?"sessionOn":"")}>● {running?"LIVE":"READY"}</span><button className="secondary compact" onClick={()=>nav("dashboard")}>Dashboard</button></div></div>
- <div className="studioGrid"><div className="stageWrap"><div className="stage"><video ref={video} playsInline muted autoPlay style={{display:"none"}}/><canvas ref={canvas}/><img ref={source} hidden alt="source"/>{!running&&<div className="empty"><div className="orb">◉</div><strong>Realtime preview</strong><span>Start your camera to begin the creator session.</span></div>}<div className={"live "+(running?"on":"")}>● {running?"LIVE · 30 FPS":"READY"}</div></div><div className="stageFoot"><span>Processed preview</span><span>{outputReady?"Camera + microphone output ready":"Output will appear after camera start"}</span></div></div>
- <aside className="controlRail"><div className="card"><div className="cardtitle">SOURCE PERSON</div><label className="upload large">{sourceUrl?<img src={sourceUrl} alt="Selected source"/>:<><div className="uploadicon">＋</div><span>Upload full-body image</span></>}<input type="file" accept="image/*" onChange={upload}/></label><small className="hint">Use an image you own or have permission to use. The source supplies the visual identity for the workspace.</small></div>
- <div className="card"><div className="cardtitle">LIVE INPUT</div><select className="cameraSelect" value={deviceId} disabled={running||devices.length===0} onChange={e=>setDeviceId(e.target.value)}><option value="">{devices.length?"Select camera":"Camera will appear after permission"}</option>{devices.map(d=><option key={d.deviceId} value={d.deviceId}>{d.label||`Camera ${devices.indexOf(d)+1}`}</option>)}</select><div className="voiceRow"><label>Voice profile</label><select className="voiceSelect" value={voiceStyle} disabled={!running} onChange={e=>setVoiceStyle(e.target.value as "natural"|"male"|"female")}><option value="natural">Natural</option><option value="male">Male style</option><option value="female">Female style</option></select></div><label className="check"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/><span>I have permission to use this source image.</span></label><button className="primary" onClick={running?stop:start}>{running?"Stop live session":"Start live session"}</button></div>
- <div className="card"><div className="cardtitle">OUTPUT</div><div className="outputrow"><button className="secondary" disabled={!outputReady||!running} onClick={openOutput}>Open output</button><button className="secondary" disabled={!outputReady||!running} onClick={copyOutput}>Expose stream</button></div><div className="row"><span>Mirror preview</span><button className={"switch "+(mirror?"active":"")} onClick={()=>setMirror(!mirror)}><i/></button></div></div>
- <div className="status"><span className={ready?"dot ready":"dot"}/>{status}{running&&!landmarker.current&&<button className="secondary retry" onClick={loadFaceLandmarker}>Retry tracking</button>}</div></aside></div>
- <div className="workflow"><div><span>OUTPUT WORKFLOW</span><strong>LiveFace → clean output → OBS / desktop bridge → your call or stream app</strong></div><div><span>PRIVACY</span><strong>Camera and microphone processing stays local in the browser.</strong></div></div></div>
-}
-return <main><div className="appShell"><nav className="sidebar"><div className="sideBrand"><span className="mark">◉</span><div><b>LiveFace</b><small>CREATOR STUDIO</small></div></div><div className="navGroup"><span className="navLabel">WORKSPACE</span><button className={view==="dashboard"?"navItem active":"navItem"} onClick={()=>nav("dashboard")}>⌂ <span>Dashboard</span></button><button className={view==="realtime"?"navItem active":"navItem"} onClick={()=>nav("realtime")}>◉ <span>Realtime Full Body</span><em>LIVE</em></button></div><div className="navGroup"><span className="navLabel">CREATE</span><button className={view==="tools"?"navItem active":"navItem"} onClick={()=>nav("tools")}>✦ <span>Creative Tools</span></button><button className="navItem" onClick={()=>nav("tools")}>◌ <span>Voice</span></button></div><div className="navBottom"><button className={view==="settings"?"navItem active":"navItem"} onClick={()=>nav("settings")}>⚙ <span>Settings</span></button><div className="sideStatus"><span className="statusDot"/><div><b>{running?"Live session active":"Studio ready"}</b><small>{running?"30 FPS output":"Browser workspace"}</small></div></div></div></nav><div className="content">{view==="dashboard"?<Dashboard/>:view==="realtime"?<Realtime/>:view==="tools"?<Tools/>:<Settings/>}</div></div></main>}
